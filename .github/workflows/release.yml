@@ -86,6 +86,33 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Extract this version's section from CHANGELOG.md so the GH
+      # Release body is the same prose users see on the changelog page.
+      # Falls back to a one-liner if the version isn't found.
+      - name: Build release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          if grep -qE "^## ${VERSION}( |$)" CHANGELOG.md; then
+            awk -v ver="$VERSION" '
+              $0 ~ "^## " ver "( |$)" { flag=1; next }
+              flag && /^## / { exit }
+              flag { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+            echo "Extracted release notes for $VERSION:"
+            cat "$NOTES_FILE"
+          else
+            echo "No CHANGELOG entry for $VERSION; using fallback notes."
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)." > "$NOTES_FILE"
+          fi
+          echo "path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
       # Pre-create the GH Release so the per-platform workflows only
       # have to upload assets. Without this, every platform races to
       # call POST /releases and all but one fail with "already_exists".
@@ -94,10 +121,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          NOTES_PATH: ${{ steps.notes.outputs.path }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; skipping create."
+            echo "Release $TAG already exists; updating notes."
+            gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_PATH"
             exit 0
           fi
           PRERELEASE_FLAG=""
@@ -108,7 +137,7 @@ jobs:
             --repo "$REPO" \
             --title "$TAG" \
             $PRERELEASE_FLAG \
-            --notes "See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md)."
+            --notes-file "$NOTES_PATH"
 
   macos:
     name: macOS
