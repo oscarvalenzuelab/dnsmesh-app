@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DNSMesh",
+  "version": "0.1.0-alpha.1",
+  "identifier": "io.dnsmesh.desktop",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DNSMesh",
+        "width": 1024,
+        "height": 720,
+        "resizable": true,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "appimage", "deb", "rpm", "nsis"],
+    "copyright": "Copyright (c) 2026 Oscar Valenzuela",
+    "publisher": "Oscar Valenzuela",
+    "category": "SocialNetworking",
+    "shortDescription": "End-to-end encrypted messaging over DNS.",
+    "longDescription": "DNSMesh is the desktop client for the DNS Mesh Protocol — a serverless, end-to-end encrypted messaging system that uses DNS as transport. Identities, prekeys, and mailbox slots all resolve as DNS records, so there is no central server, no app store, and no gatekeeper between sender and recipient.",
+    "homepage": "https://github.com/oscarvalenzuelab/dnsmesh-desktop",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

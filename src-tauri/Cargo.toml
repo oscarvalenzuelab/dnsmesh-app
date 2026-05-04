@@ -1,0 +1,76 @@
+[package]
+name = "dnsmesh-desktop"
+version = "0.1.0-alpha.1"
+description = "Tauri desktop client for the DNS Mesh Protocol"
+authors = ["Oscar Valenzuela"]
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "dnsmesh_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# DMP SDK — path-based for local development. The two repos are sibling
+# clones on the dev machine. For production / CI builds, swap these to
+# `git = "ssh://git@github.com/oscarvalenzuelab/dnsmesh-rs.git", tag = "sdk-v0.1.0"`
+# (or whatever the current sdk-v* tag is). See CONTRIBUTING.md.
+dnsmesh-core = { path = "../../dnsmesh-rs/crates/dnsmesh-core" }
+dnsmesh-net = { path = "../../dnsmesh-rs/crates/dnsmesh-net" }
+dnsmesh-storage = { path = "../../dnsmesh-rs/crates/dnsmesh-storage" }
+dnsmesh-client = { path = "../../dnsmesh-rs/crates/dnsmesh-client" }
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+serde_yaml = "0.9"
+rpassword = "7"
+base64 = "0.22"
+# Per-identity KDF salt minting at create time. Already a transitive
+# dep via x25519-dalek; pulled in directly for thread_rng().
+rand = "0.8"
+
+# HTTPS client for the M9.2 TSIG-register dance (challenge / sign /
+# confirm) against a multi-tenant DMP node. `rustls-tls` keeps us off
+# the system openssl. `json` brings in serde-driven request/response
+# bodies so the call site stays tidy.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Per-identity backup archive (export / import). `tar` for the
+# uncompressed entry layout; `flate2` (already a transitive dep through
+# tauri's plugins) for gzip wrapping so the on-disk artefact is a single
+# `.dmp-backup.tar.gz` file the user can stash in a vault.
+tar = "0.4"
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"

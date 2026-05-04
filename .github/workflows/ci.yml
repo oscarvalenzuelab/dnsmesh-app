@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (svelte-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type-check (svelte-check)
+        run: bun run check
+
+      - name: Lint (if defined)
+        run: |
+          if jq -e '.scripts.lint' package.json > /dev/null; then
+            bun run lint
+          else
+            echo "No lint script defined; skipping."
+          fi
+
+  backend:
+    name: Backend (fmt + clippy + test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The path-based deps require the sibling `dnsmesh-rs` repo to be
+      # alongside this one. CI clones it fresh on every run and pins to
+      # the SHA in `.dnsmesh-rs-ref` so backend lints don't drift with
+      # whatever main HEAD happens to be at the time.
+      - name: Read dnsmesh-rs ref pin
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .dnsmesh-rs-ref ]]; then
+            echo "::error::.dnsmesh-rs-ref missing — see CONTRIBUTING.md"
+            exit 1
+          fi
+          ref="$(tr -d '[:space:]' < .dnsmesh-rs-ref)"
+          if [[ -z "$ref" ]]; then
+            echo "::error::.dnsmesh-rs-ref is empty"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Clone dnsmesh-rs sibling at pinned ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/oscarvalenzuelab/dnsmesh-rs.git ../dnsmesh-rs
+          git -C ../dnsmesh-rs checkout ${{ steps.sdk.outputs.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsoup-3.0-dev
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: cargo build (release-shape sanity)
+        working-directory: src-tauri
+        run: cargo build

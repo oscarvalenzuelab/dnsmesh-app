@@ -1,0 +1,138 @@
+name: Release
+
+# Orchestrator. Fires on `desktop-v*` tags, validates the tag's
+# version against the manifest files, pre-creates the GH Release, then
+# delegates each platform's build to its own reusable workflow. The
+# per-platform workflows are also `workflow_dispatch`-triggerable so a
+# flaky leg can be re-run on its own without re-doing the others.
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      sdk_ref: ${{ steps.sdk.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          if [[ "$tag" =~ ^desktop-v([0-9]+\.[0-9]+\.[0-9]+([-+].+)?)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+          else
+            echo "::error::tag '$tag' does not match desktop-v<semver>"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag (version=$version)"
+
+      - name: Confirm package.json + tauri.conf.json + Cargo.toml all match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${{ steps.extract.outputs.version }}"
+          pkg_version="$(jq -r .version package.json)"
+          conf_version="$(jq -r .version src-tauri/tauri.conf.json)"
+          cargo_version="$(grep -E '^version = ' src-tauri/Cargo.toml | head -n1 | sed -E 's/^version = "(.*)"/\1/')"
+          for v in "$pkg_version" "$conf_version" "$cargo_version"; do
+            if [[ "$v" != "$tag_version" ]]; then
+              echo "::error::version mismatch: tag=$tag_version, package.json=$pkg_version, tauri.conf.json=$conf_version, Cargo.toml=$cargo_version"
+              exit 1
+            fi
+          done
+          echo "OK: all versions match $tag_version"
+
+      # Audit-trail pin for the sibling SDK clone. Bumping
+      # `.dnsmesh-rs-ref` is an explicit commit reviewers can see in the
+      # PR diff — preferable to letting whatever main HEAD happened to
+      # be at tag-push time silently determine the release contents.
+      - name: Resolve dnsmesh-rs ref pin
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .dnsmesh-rs-ref ]]; then
+            echo "::error::.dnsmesh-rs-ref missing"
+            exit 1
+          fi
+          ref="$(tr -d '[:space:]' < .dnsmesh-rs-ref)"
+          if [[ -z "$ref" ]]; then
+            echo "::error::.dnsmesh-rs-ref is empty"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Pinning dnsmesh-rs to $ref"
+
+  create_release:
+    name: create release
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      # Pre-create the GH Release so the per-platform workflows only
+      # have to upload assets. Without this, every platform races to
+      # call POST /releases and all but one fail with "already_exists".
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping create."
+            exit 0
+          fi
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
+            $PRERELEASE_FLAG \
+            --notes "See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md)."
+
+  macos:
+    name: macOS
+    needs: [validate, create_release]
+    uses: ./.github/workflows/release-macos.yml
+    secrets: inherit
+    with:
+      tag: ${{ github.ref_name }}
+      sdk_ref: ${{ needs.validate.outputs.sdk_ref }}
+
+  linux:
+    name: Linux
+    needs: [validate, create_release]
+    uses: ./.github/workflows/release-linux.yml
+    secrets: inherit
+    with:
+      tag: ${{ github.ref_name }}
+      sdk_ref: ${{ needs.validate.outputs.sdk_ref }}
+
+  windows:
+    name: Windows
+    needs: [validate, create_release]
+    uses: ./.github/workflows/release-windows.yml
+    secrets: inherit
+    with:
+      tag: ${{ github.ref_name }}
+      sdk_ref: ${{ needs.validate.outputs.sdk_ref }}

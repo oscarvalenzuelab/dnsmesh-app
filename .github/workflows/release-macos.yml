@@ -1,0 +1,157 @@
+name: Release - macOS
+
+# Builds the macOS aarch64 + x86_64 .dmg / .app.tar.gz bundles and
+# uploads them to the GH Release identified by `inputs.tag`. Called by
+# the orchestrator on every `desktop-v*` tag push, and also exposed as
+# `workflow_dispatch` so a flaky leg can be re-triggered manually
+# without re-running the linux / windows builds.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag the bundles attach to."
+        required: true
+        type: string
+      sdk_ref:
+        description: "dnsmesh-rs SHA to pin against."
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. desktop-v0.1.0-alpha.1)."
+        required: true
+        type: string
+      sdk_ref:
+        description: "dnsmesh-rs SHA pin (defaults to .dnsmesh-rs-ref at the tag)."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve dnsmesh-rs ref pin
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.sdk_ref }}" ]; then
+            ref="${{ inputs.sdk_ref }}"
+          else
+            ref="$(tr -d '[:space:]' < .dnsmesh-rs-ref)"
+          fi
+          if [ -z "$ref" ]; then
+            echo "::error::no sdk_ref input and .dnsmesh-rs-ref is empty"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Pinning dnsmesh-rs to $ref"
+
+      - name: Clone dnsmesh-rs sibling at pinned ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/oscarvalenzuelab/dnsmesh-rs.git ../dnsmesh-rs
+          git -C ../dnsmesh-rs checkout ${{ steps.sdk.outputs.ref }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install bun deps
+        run: bun install --frozen-lockfile
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install create-dmg
+        # Tauri's bundler shells out to `create-dmg` to assemble the
+        # .dmg artifact alongside the .app. Homebrew is preinstalled on
+        # the macOS runner image but `create-dmg` is not.
+        run: brew install create-dmg
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Tauri's bundler signs as part of the build when the cert is in
+      # the keychain — so the import has to happen BEFORE cargo tauri build.
+      - name: Import Apple cert
+        if: env.HAS_APPLE_CERT == 'true'
+        env:
+          CERT_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_FILE="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          echo "$CERT_BASE64" | base64 --decode > "$CERT_FILE"
+          security create-keychain -p actions "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          security import "$CERT_FILE" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KEYCHAIN"
+
+      - name: Skip code signing (no cert configured)
+        if: env.HAS_APPLE_CERT != 'true'
+        run: echo "APPLE_CERTIFICATE unset — shipping unsigned bundles."
+
+      - name: Build (cargo tauri build)
+        env:
+          APPLE_CERTIFICATE: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_DEVELOPER_ID_CERT_NAME || '' }}
+          APPLE_ID: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_TEAM_ID: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_PASSWORD: ${{ env.HAS_APPLE_CERT == 'true' && secrets.APPLE_PASSWORD || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${HAS_APPLE_CERT:-false}" != "true" ]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+          fi
+          cargo tauri build --target ${{ matrix.target }}
+
+      - name: Upload to GH Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          fail_on_unmatched_files: false
+          files: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz

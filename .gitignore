@@ -1,0 +1,35 @@
+# Build output
+node_modules
+/build
+/.svelte-kit
+/package
+dist/
+
+# Environment / local overrides
+.env
+.env.*
+!.env.example
+.env.local
+*.local.toml
+
+# Tooling
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# OS / IDE noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Agent / planning context — never committed
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+.aider*
+.aider.conf.yml
+superpower-docs/
+*.planning.md
+**/scratch/
