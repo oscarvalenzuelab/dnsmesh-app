@@ -93,8 +93,13 @@ jobs:
           workspaces: src-tauri
           key: x86_64-pc-windows-msvc
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2" --locked
+        # Fetch a prebuilt binary instead of compiling from source —
+        # cuts ~3-5 min off cold builds (especially big on Windows).
+        run: cargo binstall tauri-cli --version "^2" --no-confirm --locked
 
       - name: Build (cargo tauri build)
         run: cargo tauri build --target x86_64-pc-windows-msvc
