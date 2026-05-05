@@ -48,6 +48,12 @@
   let emojiOpen = $state<boolean>(false);
   let threadMenuOpen = $state<boolean>(false);
   let clearing = $state<boolean>(false);
+  // Inline confirm step. The Tauri webview silently returned `false`
+  // from `window.confirm`, so the click chain never reached the actual
+  // clear path. Use UI state for a two-click flow that works in every
+  // webview.
+  let confirmingClear = $state<boolean>(false);
+  let confirmClearBtn: HTMLButtonElement | undefined = $state();
 
   // Fast-poll cadence while a thread is focused. SDK pulls are global,
   // so this just shortens latency for whichever chat the user is
@@ -70,18 +76,28 @@
 
   function toggleThreadMenu() {
     threadMenuOpen = !threadMenuOpen;
+    // Reset the confirm step whenever the menu opens, so it always
+    // starts at "Clear chat" not the half-armed "Confirm" view.
+    if (threadMenuOpen) confirmingClear = false;
   }
 
-  async function clearChat() {
+  function requestClearChat() {
+    confirmingClear = true;
+    // Move focus onto the destructive button so the next Enter / Space
+    // confirms (or Escape via the menu cancels). Without this, focus
+    // stays on the now-removed "Clear chat" button and falls back to
+    // the document.
+    tick().then(() => confirmClearBtn?.focus());
+  }
+
+  function cancelClearChat() {
+    confirmingClear = false;
+  }
+
+  async function confirmClearChat() {
+    confirmingClear = false;
     threadMenuOpen = false;
     if (!activeConversation) return;
-    const label = activeConversation.label;
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(`Clear all messages with ${label}?`)
-    ) {
-      return;
-    }
     clearing = true;
     try {
       const incomingIds = activeConversation.messages
@@ -214,6 +230,11 @@
     activeKey = key;
     replyTo = null;
     sendError = "";
+    // Don't carry per-thread overflow state across a switch — a
+    // half-armed "Yes, clear" from chat A would otherwise act on
+    // chat B once it became active.
+    threadMenuOpen = false;
+    confirmingClear = false;
     await tick();
     if (composerEl) composerEl.focus();
     // Mark-read is handled by the $effect below so messages that
@@ -237,6 +258,8 @@
   function closeConversation() {
     activeKey = null;
     replyTo = null;
+    threadMenuOpen = false;
+    confirmingClear = false;
   }
 
   async function send() {
@@ -535,14 +558,35 @@
               >⋯</button>
               {#if threadMenuOpen}
                 <div class="thread-menu" role="menu">
-                  <button
-                    type="button"
-                    class="thread-menu-item danger-text"
-                    onclick={clearChat}
-                    disabled={clearing || activeConversation.messages.length === 0}
-                  >
-                    {clearing ? "Clearing…" : "Clear chat"}
-                  </button>
+                  {#if !confirmingClear}
+                    <button
+                      type="button"
+                      class="thread-menu-item danger-text"
+                      onclick={requestClearChat}
+                      disabled={clearing || activeConversation.messages.length === 0}
+                    >
+                      {clearing ? "Clearing…" : "Clear chat"}
+                    </button>
+                  {:else}
+                    <p class="thread-menu-prompt">Clear all messages with this contact?</p>
+                    <button
+                      bind:this={confirmClearBtn}
+                      type="button"
+                      class="thread-menu-item danger-text"
+                      onclick={confirmClearChat}
+                      disabled={clearing}
+                    >
+                      {clearing ? "Clearing…" : "Yes, clear"}
+                    </button>
+                    <button
+                      type="button"
+                      class="thread-menu-item"
+                      onclick={cancelClearChat}
+                      disabled={clearing}
+                    >
+                      Cancel
+                    </button>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -899,6 +943,12 @@
     border: 1px solid transparent;
     padding: 0.5em 0.7em;
     border-radius: 6px;
+  }
+  .thread-menu-prompt {
+    margin: 0 0 0.4rem;
+    padding: 0.4em 0.7em 0;
+    font-size: 12px;
+    color: var(--muted-strong);
   }
   .thread-menu-item:hover:not(:disabled) {
     background: var(--accent-softer);

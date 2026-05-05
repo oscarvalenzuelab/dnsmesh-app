@@ -144,18 +144,65 @@ jobs:
       - name: Build APK (release, all ABIs)
         run: cargo tauri android build --apk
 
-      - name: Locate built APKs
+      - name: Sign APKs with Android debug keystore
+        # `cargo tauri android build --apk` produces unsigned release
+        # APKs, which Android refuses to install
+        # (INSTALL_PARSE_FAILED_NO_CERTIFICATES). Sign with the debug
+        # keystore so sideloads at least install. Same alpha policy as
+        # the unsigned macOS / Windows builds: install with friction,
+        # not Play Store-trusted. Promote to a real signing keystore
+        # via secrets when one is wired up.
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEBUG_KS="$RUNNER_TEMP/debug.keystore"
+          # Generate the debug keystore on the fly so we don't depend on
+          # a runner-provided ~/.android setup. Credentials are the
+          # well-known public Android debug values.
+          keytool -genkeypair -v -keystore "$DEBUG_KS" -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+          # apksigner ships in build-tools; setup-android pins one but
+          # doesn't put it on PATH, so resolve it explicitly. Guard
+          # the build-tools dir so a `find` over a missing path can't
+          # blow up the script before our targeted error fires.
+          if [ ! -d "$ANDROID_HOME/build-tools" ]; then
+            echo "::error::ANDROID_HOME/build-tools is missing — setup-android did not provision build-tools"
+            exit 1
+          fi
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n1 || true)"
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner not found in $ANDROID_HOME/build-tools"
+            exit 1
+          fi
+          echo "Using $APKSIGNER"
+
+          shopt -s globstar nullglob
+          for unsigned in src-tauri/gen/android/app/build/outputs/apk/**/release/*-unsigned.apk; do
+            signed="${unsigned%-unsigned.apk}-debug-signed.apk"
+            "$APKSIGNER" sign --ks "$DEBUG_KS" --ks-pass pass:android \
+              --key-pass pass:android --ks-key-alias androiddebugkey \
+              --out "$signed" "$unsigned"
+            "$APKSIGNER" verify "$signed"
+            echo "Signed: $signed"
+            # Drop the unsigned source so the upload step can't pick it
+            # up by mistake.
+            rm -f "$unsigned"
+          done
+
+      - name: Locate signed APKs
         id: apk
         shell: bash
         run: |
           set -euo pipefail
           shopt -s globstar nullglob
-          # Tauri 2 emits per-ABI APKs under
-          # src-tauri/gen/android/app/build/outputs/apk/<abi>/release/
-          # We capture the universal one if present, else all per-ABI.
-          mapfile -t found < <(ls src-tauri/gen/android/app/build/outputs/apk/**/release/*.apk 2>/dev/null || true)
+          # Expand directly into an array — `nullglob` makes a
+          # non-matching glob expand to zero args, which would have
+          # made `ls`-piped-into-array list the cwd and silently pass.
+          found=(src-tauri/gen/android/app/build/outputs/apk/**/release/*-debug-signed.apk)
           if [ "${#found[@]}" -eq 0 ]; then
-            echo "::error::no APKs produced"
+            echo "::error::no signed APKs produced"
             ls -R src-tauri/gen/android/app/build/outputs || true
             exit 1
           fi
@@ -170,4 +217,4 @@ jobs:
           tag_name: ${{ inputs.tag }}
           fail_on_unmatched_files: false
           files: |
-            src-tauri/gen/android/app/build/outputs/apk/**/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/**/release/*-debug-signed.apk
