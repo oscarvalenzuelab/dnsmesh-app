@@ -400,10 +400,10 @@ async fn directory_feed_cache_slot() -> &'static DirectoryFeedCache {
 /// enrichment on top of the curated list.
 async fn fetch_directory_feed() -> Vec<DirectoryNode> {
     let slot = directory_feed_cache_slot().await;
-    if let Some((stored_at, ref cached)) = *slot.lock() {
-        if stored_at.elapsed() < DIRECTORY_FEED_TTL {
-            return cached.clone();
-        }
+    if let Some((stored_at, ref cached)) = *slot.lock()
+        && stored_at.elapsed() < DIRECTORY_FEED_TTL
+    {
+        return cached.clone();
     }
 
     let Ok(client) = reqwest::ClientBuilder::new()
@@ -479,10 +479,10 @@ pub async fn list_known_nodes() -> CommandResult<Vec<KnownNodeStatus>> {
     let mut slots: Vec<Option<DiscoveredNode>> =
         (0..WELL_KNOWN_NODES.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
-        if let Ok((idx, live)) = joined {
-            if let Some(slot) = slots.get_mut(idx) {
-                *slot = live;
-            }
+        if let Ok((idx, live)) = joined
+            && let Some(slot) = slots.get_mut(idx)
+        {
+            *slot = live;
         }
     }
 
@@ -866,10 +866,10 @@ fn strip_endpoint_to_host(endpoint: &str) -> String {
     let host_only = no_scheme.split('/').next().unwrap_or(no_scheme);
     // Handle bracketed IPv6 literals: `[::1]:8443` → `::1`,
     // `[::1]` → `::1`. Python's CLI does the same.
-    if let Some(rest) = host_only.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return rest[..end].to_string();
-        }
+    if let Some(rest) = host_only.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..end].to_string();
     }
     if let Some((host, _port)) = host_only.rsplit_once(':') {
         // Bare-IPv6 (more than one `:`, no brackets) isn't a valid
