@@ -165,3 +165,12 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
       sdk_ref: ${{ needs.validate.outputs.sdk_ref }}
+
+  android:
+    name: Android
+    needs: [validate, create_release]
+    uses: ./.github/workflows/release-android.yml
+    secrets: inherit
+    with:
+      tag: ${{ github.ref_name }}
+      sdk_ref: ${{ needs.validate.outputs.sdk_ref }}
