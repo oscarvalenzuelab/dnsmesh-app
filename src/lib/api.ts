@@ -153,8 +153,6 @@ export const api = {
     }),
   receiveMessages: (): Promise<InboxMessageView[]> =>
     invoke("receive_messages"),
-  receiveMessagesDiagnostic: (): Promise<ReceiveDiagnostic> =>
-    invoke("receive_messages_diagnostic"),
 
   // nodes
   listKnownResolvers: (): Promise<ResolverInfo[]> =>
@@ -177,7 +175,6 @@ export const api = {
     invoke("inbox_append", { args: { messages } }),
   inboxMarkRead: (msg_id_hex: string): Promise<void> =>
     invoke("inbox_mark_read", { args: { msg_id_hex } }),
-  inboxMarkAllRead: (): Promise<void> => invoke("inbox_mark_all_read"),
   inboxDelete: (msg_id_hexes: string[]): Promise<InboxDeleteResult> =>
     invoke("inbox_delete", { args: { msg_id_hexes } }),
 
@@ -385,42 +382,3 @@ export interface ImportBackupResult {
   file_count: number;
 }
 
-// --- Receive diagnostic --------------------------------------------------
-
-// One slot manifest the diagnostic walk found, with the SDK's verdict.
-// `decision` values mirror the Rust side:
-//   signature_invalid — TXT didn't parse / Ed25519 sig invalid
-//   recipient_mismatch — manifest's recipient_id is not ours
-//   expired — manifest expired before now
-//   deliverable_pinned — sender is pinned; SDK delivers (unless replayed)
-//   deliverable_tofu — TOFU mode; any verified manifest is accepted
-//   quarantine_intro — un-pinned sender, lands in the intro queue
-export interface ManifestSeen {
-  zone: string;
-  slot: number;
-  sender_spk_hex: string;
-  msg_id_hex: string;
-  decision:
-    | "signature_invalid"
-    | "recipient_mismatch"
-    | "expired"
-    | "deliverable_pinned"
-    | "deliverable_tofu"
-    | "quarantine_intro"
-    | string;
-  note: string;
-}
-
-// Verbose receive walk: what's on the wire, plus the SDK's actual
-// delivery count for cross-reference.
-export interface ReceiveDiagnostic {
-  identity: string;
-  recipient_id_hex: string;
-  zones_polled: string[];
-  slots_per_zone: number;
-  manifests_found: ManifestSeen[];
-  pinned_contacts: number;
-  tofu_mode: boolean;
-  inbox_count: number;
-  notes: string[];
-}

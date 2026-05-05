@@ -8,7 +8,9 @@
     refreshActiveIdentity,
     refreshPublishedStatus,
   } from "$lib/stores/identity";
-  import { clearInbox } from "$lib/stores/inbox";
+  import { clearInbox, hydrateInbox } from "$lib/stores/inbox";
+  import { clearSent, hydrateSent } from "$lib/stores/sent";
+  import { contacts, refreshContacts } from "$lib/stores/contacts";
   import {
     api,
     isCommandError,
@@ -489,8 +491,15 @@
         // Identity is on disk; refresh so it shows up in the list and
         // the user can switch to it without re-creating.
         clearInbox();
+        clearSent();
+        contacts.set([]);
         await refreshActiveIdentity();
         await reloadList();
+        if ($activeIdentity) {
+          hydrateSent($activeIdentity.username);
+          void hydrateInbox();
+          void refreshContacts();
+        }
         return;
       }
 
@@ -521,8 +530,15 @@
           (isCommandError(cfgErr) ? cfgErr.message : String(cfgErr)) +
           ". Open Settings to finish configuring.";
         clearInbox();
+        clearSent();
+        contacts.set([]);
         await refreshActiveIdentity();
         await reloadList();
+        if ($activeIdentity) {
+          hydrateSent($activeIdentity.username);
+          void hydrateInbox();
+          void refreshContacts();
+        }
         return;
       }
 
@@ -541,8 +557,15 @@
       }
 
       clearInbox();
+      clearSent();
+      contacts.set([]);
       await refreshActiveIdentity();
       await reloadList();
+      if ($activeIdentity) {
+        hydrateSent($activeIdentity.username);
+        void hydrateInbox();
+        void refreshContacts();
+      }
     } catch (err) {
       stageCreate = "failed";
       error = isCommandError(err) ? err.message : String(err);
@@ -613,8 +636,15 @@
       switchPassphrase = "";
       switchTargetUsername = "";
       clearInbox();
+      clearSent();
+      contacts.set([]);
       await refreshActiveIdentity();
       await reloadList();
+      if ($activeIdentity) {
+        hydrateSent($activeIdentity.username);
+        void hydrateInbox();
+        void refreshContacts();
+      }
     } catch (err) {
       error = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -627,6 +657,8 @@
     try {
       await api.lockIdentity();
       clearInbox();
+      clearSent();
+      contacts.set([]);
       await refreshActiveIdentity();
       await reloadList();
       info = "Locked.";

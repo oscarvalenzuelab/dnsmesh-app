@@ -141,9 +141,9 @@
     }
   }
 
-  // Jump to Compose pre-targeted at this contact.
+  // Open the chat shell focused on this contact.
   function composeFor(username: string) {
-    void goto(`/compose?to=${encodeURIComponent(username)}`);
+    void goto(`/?contact=${encodeURIComponent(username)}`);
   }
 
   // Username currently being deleted; empty when no delete is pending.
@@ -336,7 +336,7 @@
                 class="primary compose-btn"
                 onclick={() => composeFor(c.username)}
               >
-                Compose
+                Open chat
               </button>
               <button
                 type="button"

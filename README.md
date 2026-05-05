@@ -52,6 +52,22 @@ Pick the format that matches your distro:
 - `.rpm` — Fedora, RHEL, and derivatives. `sudo dnf install ./DNSMesh-*.rpm`.
 - `.AppImage` — universal. `chmod +x DNSMesh-*.AppImage && ./DNSMesh-*.AppImage`.
 
+### Android
+
+Download the `.apk` and sideload it. Alpha builds are signed with the
+Android **debug keystore** — installable via sideload but not via the
+Play Store.
+
+1. On the device: **Settings → Apps → Special access → Install
+   unknown apps** and grant your file manager / browser permission
+   to install.
+2. Open the downloaded `.apk` and tap **Install**.
+
+Heads up: the Android client is **experimental**. The build pipeline
+proves the APK compiles; whether DMP's DNS UPDATE traffic on port 53
+fully works inside Android's network sandbox is still being validated.
+Expect rough edges. Bug reports welcome via the issue tracker.
+
 ## What this is
 
 DMP is an open protocol for moving end-to-end encrypted messages between
@@ -128,6 +144,7 @@ CI builds the full release matrix on every `desktop-v*` tag:
 | Linux — x86_64 | `.deb`, `.rpm`, `.AppImage` |
 | Linux — aarch64 | `.deb`, `.rpm`, `.AppImage` |
 | Windows — x86_64 | `.msi`, `.exe` |
+| Android — universal (experimental) | `.apk` (debug-signed) |
 
 Code-signing is wired but gated on signing-secret presence; alpha
 builds ship unsigned with the warnings noted in **Download** above.

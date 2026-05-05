@@ -1,206 +1,381 @@
 <script lang="ts">
-  // Inbox page. Two-pane mailbox; persistence lives in the per-identity
-  // `inbox.jsonl` so the SDK's replay cache doesn't eat messages.
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
   import { activeIdentity } from "$lib/stores/identity";
   import {
     inbox,
-    inboxBusy,
     inboxError,
     pollInbox,
-    hydrateInbox,
     markRead,
-    markAllRead,
-    deleteMessage,
     deleteMessages,
   } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
+  import { appendSent, removeSentByRecipient } from "$lib/stores/sent";
   import {
-    api,
-    isCommandError,
-    type ReceiveDiagnostic,
-  } from "$lib/api";
-  import {
-    avatarBackground,
-    avatarForeground,
-    avatarInitials,
-  } from "$lib/avatar";
+    conversations,
+    type ChatMessage,
+    type Conversation,
+    UNKNOWN_KEY,
+  } from "$lib/stores/conversations";
+  import { api, isCommandError, type ContactView } from "$lib/api";
+  import { PICKER_EMOJI, renderEmoticons } from "$lib/emoticons";
 
-  // Selected message id (msg_id_hex); null when nothing is selected.
-  // Selecting also marks the message read.
-  let openMsgId = $state<string | null>(null);
+  // Selected conversation key. `null` means show the conversation list
+  // on mobile / show an empty placeholder pane on desktop.
+  let activeKey = $state<string | null>(null);
 
-  // Diagnostic panel — opens via the overflow menu.
-  let diag = $state<ReceiveDiagnostic | null>(null);
-  let diagBusy = $state<boolean>(false);
-  let diagError = $state<string>("");
+  // Composer state.
+  let draft = $state<string>("");
+  let sending = $state<boolean>(false);
+  let sendError = $state<string>("");
+  let replyTo = $state<ChatMessage | null>(null);
 
-  // Overflow menu (Diagnose, Mark all read).
-  let menuOpen = $state<boolean>(false);
+  // Picker state for "+ New chat".
+  let pickerOpen = $state<boolean>(false);
+  let pickerQuery = $state<string>("");
+  let pickerFetchAddress = $state<string>("");
+  let pickerBusy = $state<boolean>(false);
+  let pickerError = $state<string>("");
 
-  // Selected msg_id_hex values for bulk actions. Reassign the binding
-  // on mutation so Svelte 5 picks up the change.
-  let selected = $state<Set<string>>(new Set());
-
-  // Below the breakpoint, the two-column layout collapses to one and
-  // selecting a message swaps the list for the reading pane.
+  // Responsive state — collapse to single-column under 560px so the
+  // default 680px window keeps both columns visible.
   let isNarrow = $state<boolean>(false);
-  const NARROW_BREAKPOINT_PX = 700;
+  const NARROW_BREAKPOINT_PX = 560;
+
+  let composerEl: HTMLTextAreaElement | undefined = $state();
+  let threadEl: HTMLDivElement | undefined = $state();
+  let emojiOpen = $state<boolean>(false);
+  let threadMenuOpen = $state<boolean>(false);
+  let clearing = $state<boolean>(false);
+
+  // Fast-poll cadence while a thread is focused. SDK pulls are global,
+  // so this just shortens latency for whichever chat the user is
+  // looking at; the layout's 60s poll keeps the rest of the inbox warm.
+  const ACTIVE_POLL_INTERVAL_MS = 10_000;
+  let activePollHandle: ReturnType<typeof setInterval> | null = null;
+
+  $effect(() => {
+    if (activeKey) {
+      if (activePollHandle === null) {
+        activePollHandle = setInterval(() => {
+          void pollInbox();
+        }, ACTIVE_POLL_INTERVAL_MS);
+      }
+    } else if (activePollHandle !== null) {
+      clearInterval(activePollHandle);
+      activePollHandle = null;
+    }
+  });
+
+  function toggleThreadMenu() {
+    threadMenuOpen = !threadMenuOpen;
+  }
+
+  async function clearChat() {
+    threadMenuOpen = false;
+    if (!activeConversation) return;
+    const label = activeConversation.label;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`Clear all messages with ${label}?`)
+    ) {
+      return;
+    }
+    clearing = true;
+    try {
+      const incomingIds = activeConversation.messages
+        .filter((m) => m.direction === "in")
+        .map((m) => m.msg_id_hex);
+      if (incomingIds.length > 0) {
+        await deleteMessages(incomingIds);
+      }
+      if ($activeIdentity && activeConversation.username) {
+        removeSentByRecipient(
+          $activeIdentity.username,
+          activeConversation.username,
+        );
+      }
+      activeKey = null;
+    } finally {
+      clearing = false;
+    }
+  }
+
+  function toggleEmoji() {
+    emojiOpen = !emojiOpen;
+  }
+
+  function insertEmoji(glyph: string) {
+    const el = composerEl;
+    if (!el) {
+      draft = draft + glyph;
+    } else {
+      const start = el.selectionStart ?? draft.length;
+      const end = el.selectionEnd ?? draft.length;
+      draft = draft.slice(0, start) + glyph + draft.slice(end);
+      // Restore caret right after the inserted glyph.
+      tick().then(() => {
+        if (composerEl) {
+          const pos = start + glyph.length;
+          composerEl.focus();
+          composerEl.setSelectionRange(pos, pos);
+        }
+      });
+    }
+    emojiOpen = false;
+  }
 
   function syncNarrow() {
     if (typeof window === "undefined") return;
     isNarrow = window.innerWidth < NARROW_BREAKPOINT_PX;
   }
 
-  function selectMessage(msgId: string) {
-    openMsgId = msgId;
-    void markRead(msgId);
-  }
-
-  function closeDetail() {
-    openMsgId = null;
-  }
-
-  async function refresh() {
-    await pollInbox();
-  }
-
-  // The diagnostic call drives a real `receive_messages`, so persist
-  // anything new via `pollInbox` before rendering the panel.
-  async function runDiagnostic() {
-    diagError = "";
-    diag = null;
-    diagBusy = true;
-    menuOpen = false;
-    try {
-      diag = await api.receiveMessagesDiagnostic();
-      // Diagnostic flipped the SDK replay cache; mirror to disk.
-      await pollInbox();
-    } catch (err) {
-      diagError = isCommandError(err) ? err.message : String(err);
-    } finally {
-      diagBusy = false;
-    }
-  }
-
-  function dismissDiagnostic() {
-    diag = null;
-    diagError = "";
-  }
-
-  async function onMarkAllRead() {
-    menuOpen = false;
-    await markAllRead();
-  }
-
-  // Two-click delete (window.confirm() can be silently suppressed in
-  // some Tauri 2 webviews). First click arms, second commits within 4s.
-  let pendingDeleteId = $state<string>("");
-  let pendingBulkDelete = $state<boolean>(false);
-  let pendingTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  function armPending(key: string) {
-    if (pendingTimeout) clearTimeout(pendingTimeout);
-    if (key === "__bulk__") {
-      pendingBulkDelete = true;
-      pendingDeleteId = "";
-    } else {
-      pendingDeleteId = key;
-      pendingBulkDelete = false;
-    }
-    pendingTimeout = setTimeout(() => {
-      pendingDeleteId = "";
-      pendingBulkDelete = false;
-      pendingTimeout = null;
-    }, 4000);
-  }
-
-  function clearPending() {
-    if (pendingTimeout) clearTimeout(pendingTimeout);
-    pendingTimeout = null;
-    pendingDeleteId = "";
-    pendingBulkDelete = false;
-  }
-
-  async function onDeleteOne(msgIdHex: string) {
-    if (pendingDeleteId !== msgIdHex) {
-      armPending(msgIdHex);
-      return;
-    }
-    clearPending();
-    const ok = await deleteMessage(msgIdHex);
-    if (ok) {
-      if (selected.has(msgIdHex)) {
-        selected.delete(msgIdHex);
-        selected = new Set(selected);
-      }
-      if (openMsgId === msgIdHex) openMsgId = null;
-    }
-  }
-
-  async function onDeleteSelected() {
-    const ids = Array.from(selected);
-    if (ids.length === 0) return;
-    if (!pendingBulkDelete) {
-      armPending("__bulk__");
-      return;
-    }
-    clearPending();
-    const ok = await deleteMessages(ids);
-    if (ok) {
-      selected = new Set();
-      if (openMsgId !== null && ids.includes(openMsgId)) openMsgId = null;
-    }
-  }
-
-  function toggleSelect(msgId: string, ev: Event) {
-    // The checkbox sits inside the row; stop propagation so the row
-    // open handler doesn't also fire.
-    ev.stopPropagation();
-    if (selected.has(msgId)) {
-      selected.delete(msgId);
-    } else {
-      selected.add(msgId);
-    }
-    selected = new Set(selected);
-  }
-
-  function clearSelection() {
-    selected = new Set();
-  }
-
   onMount(() => {
     syncNarrow();
     window.addEventListener("resize", syncNarrow);
-    refreshContacts();
-    if ($activeIdentity) {
-      // Hydrate from disk first so older messages render immediately.
-      void hydrateInbox().then(() => refresh());
+    // Inbox/contacts/sent hydrate is owned by the layout — it runs on
+    // mount and on identity switch/lock from anywhere. Avoiding a
+    // duplicate hydrate here prevents a late `inbox_load` from
+    // clobbering a fresh `pollInbox` merge when both fire on startup.
+    const contactParam = page.url.searchParams.get("contact");
+    const replyToParam = page.url.searchParams.get("reply_to");
+    if (contactParam) {
+      void (async () => {
+        await openConversation(contactParam.trim().toLowerCase());
+        if (!replyToParam) return;
+        // Resolve the reply target once the conversation hydrates;
+        // the row may not be in the inbox yet on a cold-launch deep
+        // link, so wait one tick after activeConversation is set.
+        await tick();
+        const target = activeConversation?.messages.find(
+          (m) => m.msg_id_hex.toLowerCase() === replyToParam.toLowerCase(),
+        );
+        if (target) replyTo = target;
+      })();
     }
     return () => {
       window.removeEventListener("resize", syncNarrow);
+      if (activePollHandle !== null) {
+        clearInterval(activePollHandle);
+        activePollHandle = null;
+      }
     };
   });
 
-  function senderLabel(spk: string): string {
-    const match = $contacts.find(
-      (c) => c.ed25519_signing_public_key_hex === spk,
-    );
-    if (match) {
-      return `${match.username}@${match.domain}`;
-    }
-    return spk.slice(0, 16) + "…";
-  }
-
-  function contactForSpk(spk: string) {
+  // Look up a contact by the conversation key (which is the username).
+  // Falls back to a case-insensitive match so deep-link params work.
+  function contactByKey(key: string): ContactView | null {
+    const lower = key.toLowerCase();
     return (
-      $contacts.find((c) => c.ed25519_signing_public_key_hex === spk) ?? null
+      $contacts.find((c) => c.username.toLowerCase() === lower) ?? null
     );
   }
 
-  // Compact timestamp for inbox rows: today → HH:MM, older → MMM D.
-  function formatRowTimestamp(ts: number): string {
+  // Synthesize an empty Conversation when activeKey points at a known
+  // contact with no messages yet (e.g. just-added or just-picked from
+  // + New chat). Without this the thread pane would render as if no
+  // conversation were selected.
+  function virtualConversation(key: string): Conversation | null {
+    if (key === UNKNOWN_KEY) return null;
+    const c = contactByKey(key);
+    if (!c) return null;
+    return {
+      key: c.username,
+      label: `${c.username}@${c.domain}`,
+      username: c.username,
+      domain: c.domain,
+      contact: c,
+      messages: [],
+      lastTimestamp: 0,
+      unread: 0,
+      preview: "",
+    };
+  }
+
+  const activeConversation = $derived<Conversation | null>(
+    activeKey
+      ? $conversations.find((c) => c.key === activeKey) ??
+          virtualConversation(activeKey)
+      : null,
+  );
+
+  // Auto-scroll the thread to the latest message when it changes.
+  $effect(() => {
+    void activeConversation?.messages.length;
+    tick().then(() => {
+      if (threadEl) {
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
+    });
+  });
+
+  async function openConversation(key: string) {
+    activeKey = key;
+    replyTo = null;
+    sendError = "";
+    await tick();
+    if (composerEl) composerEl.focus();
+    // Mark-read is handled by the $effect below so messages that
+    // arrive via polling while the thread is already open also flip
+    // to read without requiring a click.
+  }
+
+  // Auto-mark unread incoming messages as read whenever the active
+  // thread's message list changes — covers both the initial open and
+  // late-arriving messages from the 10s fast poll.
+  $effect(() => {
+    const conv = activeConversation;
+    if (!conv) return;
+    for (const m of conv.messages) {
+      if (m.direction === "in" && !m.read) {
+        void markRead(m.msg_id_hex);
+      }
+    }
+  });
+
+  function closeConversation() {
+    activeKey = null;
+    replyTo = null;
+  }
+
+  async function send() {
+    sendError = "";
+    if (!activeConversation || !activeConversation.username) {
+      sendError = "Pick a contact to send to.";
+      return;
+    }
+    const recipient = activeConversation.username;
+    const body = replyTo
+      ? quoteReply(replyTo) + "\n\n" + draft
+      : draft;
+    if (!body.trim()) {
+      sendError = "Message body must not be empty.";
+      return;
+    }
+    // Snapshot the identity *before* the await — if the user locks or
+    // switches mid-send, the row would otherwise land in whichever
+    // identity is active when the SDK reply arrives. We bind the row
+    // to the identity that authorised the send, regardless.
+    const identityAtSend = $activeIdentity?.username ?? null;
+    if (!identityAtSend) {
+      sendError = "No identity unlocked.";
+      return;
+    }
+    sending = true;
+    try {
+      const result = await api.sendMessage(recipient, body);
+      // Only persist the sent row if that identity is still active. A
+      // mid-send switch means the row belongs to a different per-
+      // identity store and should be dropped (or, in a future revision,
+      // deferred until that identity is next unlocked).
+      const identityNow = $activeIdentity?.username ?? null;
+      if (identityNow === identityAtSend) {
+        appendSent(identityAtSend, {
+          msg_id_hex: result.msg_id_hex,
+          recipient_username: recipient,
+          timestamp: Math.floor(Date.now() / 1000),
+          plaintext_utf8: body,
+        });
+      }
+      // Pull immediately so any inbound reply that already landed
+      // before the next 60s tick shows up alongside the outgoing row.
+      void pollInbox();
+      draft = "";
+      replyTo = null;
+    } catch (err) {
+      if (isCommandError(err) && err.kind === "contact_not_found") {
+        sendError = `No pinned contact named "${recipient}". Add them from + New chat.`;
+      } else {
+        sendError = isCommandError(err) ? err.message : String(err);
+      }
+    } finally {
+      sending = false;
+    }
+  }
+
+  function quoteReply(m: ChatMessage): string {
+    const head = `> [reply to ${m.msg_id_hex.slice(0, 12)} @ ${formatTimestamp(m.timestamp)}]`;
+    const body = m.plaintext_utf8
+      .split("\n")
+      .map((line) => "> " + line)
+      .join("\n");
+    return head + "\n" + body;
+  }
+
+  function startReply(m: ChatMessage) {
+    replyTo = m;
+    if (composerEl) composerEl.focus();
+  }
+
+  function cancelReply() {
+    replyTo = null;
+  }
+
+  // Element refs + return-focus target for the picker modal.
+  let pickerSearchEl: HTMLInputElement | undefined = $state();
+  let pickerOpenerEl: HTMLElement | null = null;
+
+  function openPicker(e?: MouseEvent) {
+    if (e?.currentTarget instanceof HTMLElement) {
+      pickerOpenerEl = e.currentTarget;
+    }
+    pickerOpen = true;
+    pickerQuery = "";
+    pickerFetchAddress = "";
+    pickerError = "";
+    void refreshContacts();
+    // Hand focus to the search input on next paint so screen readers
+    // announce the dialog and keyboard users land in the search field.
+    tick().then(() => pickerSearchEl?.focus());
+  }
+
+  function closePicker() {
+    pickerOpen = false;
+    pickerError = "";
+    // Restore focus to whatever opened the picker so keyboard users
+    // don't get dumped at the top of the document.
+    const opener = pickerOpenerEl;
+    pickerOpenerEl = null;
+    tick().then(() => opener?.focus());
+  }
+
+  // Escape handler attached to the dialog itself rather than the
+  // backdrop — the backdrop has tabindex=-1 and never receives
+  // keyboard focus, so the prior wiring was a no-op.
+  function onPickerKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      closePicker();
+    }
+  }
+
+  function pickContact(c: ContactView) {
+    closePicker();
+    void openConversation(c.username.toLowerCase());
+  }
+
+  async function fetchAndOpen() {
+    pickerError = "";
+    const addr = pickerFetchAddress.trim();
+    if (!addr) {
+      pickerError = "Enter user@domain.";
+      return;
+    }
+    pickerBusy = true;
+    try {
+      const result = await api.fetchAndAddContact(addr);
+      await refreshContacts();
+      closePicker();
+      void openConversation(result.contact.username.toLowerCase());
+    } catch (err) {
+      pickerError = isCommandError(err) ? err.message : String(err);
+    } finally {
+      pickerBusy = false;
+    }
+  }
+
+  function formatTimestamp(ts: number): string {
     if (!ts) return "—";
     const d = new Date(ts * 1000);
     const now = new Date();
@@ -217,1179 +392,825 @@
     return d.toLocaleDateString([], { month: "short", day: "numeric" });
   }
 
-  // Reading-pane header timestamp.
-  function formatHeaderTimestamp(ts: number): string {
-    if (!ts) return "—";
+  function formatBubbleTimestamp(ts: number): string {
     const d = new Date(ts * 1000);
-    const now = new Date();
-    const sameDay =
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate();
-    if (sameDay) {
-      return (
-        "Today, " +
-        d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      );
-    }
     return d.toLocaleString([], {
       month: "short",
       day: "numeric",
-      year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
     });
   }
 
-  // UTC ISO-ish format for the message-details disclosure.
-  function formatTimestampDetail(ts: number): string {
-    if (!ts) return "—";
-    const d = new Date(ts * 1000);
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(d.getUTCDate()).padStart(2, "0");
-    const hh = String(d.getUTCHours()).padStart(2, "0");
-    const mi = String(d.getUTCMinutes()).padStart(2, "0");
-    const iso = `${yyyy}-${mm}-${dd} ${hh}:${mi}Z`;
-    return `${iso} · ${relativeFromNow(ts)}`;
-  }
-
-  function relativeFromNow(ts: number): string {
-    const deltaSec = Math.round(Date.now() / 1000 - ts);
-    const abs = Math.abs(deltaSec);
-    const suffix = deltaSec >= 0 ? "ago" : "from now";
-    if (abs < 60) return `${abs} second${abs === 1 ? "" : "s"} ${suffix}`;
-    const mins = Math.round(abs / 60);
-    if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ${suffix}`;
-    const hours = Math.round(abs / 3600);
-    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ${suffix}`;
-    const days = Math.round(abs / 86400);
-    return `${days} day${days === 1 ? "" : "s"} ${suffix}`;
-  }
-
-  // First ~120 chars, single-lined, with ellipsis on overflow.
-  function snippet(text: string): string {
-    const flat = text.replace(/\s+/g, " ").trim();
-    if (flat.length <= 120) return flat;
-    return flat.slice(0, 117) + "…";
-  }
-
-  // Prefill Compose with `to=<username>` and `reply_to=<msg_id_hex>`.
-  // No auto-quoting — payload semantics depend on type.
-  function reply(msg: { sender_signing_pk_hex: string; msg_id_hex: string }) {
-    const c = contactForSpk(msg.sender_signing_pk_hex);
-    if (!c) return;
-    const params = new URLSearchParams({
-      to: c.username,
-      reply_to: msg.msg_id_hex,
-    });
-    void goto(`/compose?${params.toString()}`);
-  }
-
-  // Jump to Contacts pre-filled with the unpinned sender's Ed25519
-  // SPK; the user fills in username/domain via a fetch there.
-  function addUnpinnedSender(spkHex: string) {
-    const params = new URLSearchParams({ ed25519_spk_hex: spkHex });
-    void goto(`/contacts?${params.toString()}`);
-  }
-
-  // Heuristic for monospace rendering: triple-backtick fences or
-  // 3+ leading spaces on the first non-empty line.
-  function looksLikeCode(text: string): boolean {
-    if (!text) return false;
-    if (text.includes("```")) return true;
-    const first = text.split("\n").find((l) => l.trim().length > 0) ?? "";
-    return /^ {3,}\S/.test(first);
-  }
-
-  // Newest first. Read messages stay visible; "read" only changes
-  // visual weight.
-  const visibleInbox = $derived(
-    [...$inbox].sort((a, b) => b.timestamp - a.timestamp),
-  );
-
-  const unreadCount = $derived(
-    $inbox.reduce((acc, m) => (m.read ? acc : acc + 1), 0),
-  );
-
-  const selectedCount = $derived(selected.size);
-
-  const allVisibleSelected = $derived(
-    visibleInbox.length > 0 &&
-      visibleInbox.every((m) => selected.has(m.msg_id_hex)),
-  );
-
-  const someVisibleSelected = $derived(
-    visibleInbox.some((m) => selected.has(m.msg_id_hex)) && !allVisibleSelected,
-  );
-
-  // Look the open message up from the visible inbox so refresh /
-  // delete / switch keep the reading pane in sync.
-  const openMsg = $derived(
-    openMsgId === null
-      ? null
-      : visibleInbox.find((m) => m.msg_id_hex === openMsgId) ?? null,
-  );
-
-  const showListPane = $derived(!isNarrow || openMsg === null);
-  const showReadingPane = $derived(!isNarrow || openMsg !== null);
-
-  // Decision-label helper for the diagnostic table.
-  function decisionLabel(d: string): { text: string; cls: string } {
-    switch (d) {
-      case "deliverable_pinned":
-        return { text: "Delivered (pinned)", cls: "pass" };
-      case "deliverable_tofu":
-        return { text: "Delivered (TOFU)", cls: "pass" };
-      case "quarantine_intro":
-        return { text: "Quarantined (un-pinned sender)", cls: "warn" };
-      case "expired":
-        return { text: "Expired", cls: "muted" };
-      case "recipient_mismatch":
-        return { text: "Recipient mismatch", cls: "error" };
-      case "signature_invalid":
-        return { text: "Signature invalid", cls: "error" };
-      default:
-        return { text: d, cls: "muted" };
+  function onComposerKeydown(e: KeyboardEvent) {
+    // Enter sends; Shift+Enter inserts a newline.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void send();
     }
   }
+
+  const filteredContacts = $derived<ContactView[]>(
+    pickerQuery
+      ? $contacts.filter((c) =>
+          `${c.username}@${c.domain}`
+            .toLowerCase()
+            .includes(pickerQuery.toLowerCase()),
+        )
+      : $contacts,
+  );
+
+  // Conversation-row preview prefix for outgoing-last messages.
+  function previewPrefix(c: Conversation): string {
+    const last = c.messages[c.messages.length - 1];
+    if (!last) return "";
+    return last.direction === "out" ? "You: " : "";
+  }
+
+  const showList = $derived(!isNarrow || activeKey === null);
+  const showThread = $derived(!isNarrow || activeKey !== null);
 </script>
 
-<section class="inbox-page">
-  <header class="page-header">
-    <div class="header-titles">
-      <h1>Inbox</h1>
-      {#if unreadCount > 0}
-        <span class="unread-pill">{unreadCount} unread</span>
-      {/if}
-    </div>
-    <div class="actions">
-      <button
-        class="primary"
-        disabled={!$activeIdentity || $inboxBusy}
-        onclick={refresh}
-      >
-        {$inboxBusy ? "Polling…" : "Refresh"}
-      </button>
-      <div class="overflow-wrap">
-        <button
-          type="button"
-          class="overflow-button"
-          aria-haspopup="true"
-          aria-expanded={menuOpen}
-          disabled={!$activeIdentity}
-          onclick={() => (menuOpen = !menuOpen)}
-          title="More actions"
-        >
-          ···
-        </button>
-        {#if menuOpen}
-          <ul class="overflow-menu" role="menu">
-            <li>
-              <button
-                type="button"
-                onclick={runDiagnostic}
-                disabled={diagBusy || $inboxBusy}
-              >
-                {diagBusy ? "Diagnosing…" : "Diagnose"}
-              </button>
-            </li>
-            <li>
-              <button
-                type="button"
-                onclick={onMarkAllRead}
-                disabled={unreadCount === 0}
-              >
-                Mark all read
-              </button>
-            </li>
-          </ul>
-        {/if}
-      </div>
-    </div>
-  </header>
-
-  {#if !$activeIdentity}
-    <div class="placeholder">
+{#if !$activeIdentity}
+  <div class="locked-pane">
+    <div class="locked-card">
+      <h2>No identity unlocked</h2>
       <p class="muted">
-        Unlock an identity from <a href="/identities">Identities</a> to receive
-        messages.
+        Open the identity menu in the header to unlock or switch identities.
       </p>
+      <button class="primary" onclick={() => goto("/identities")}>
+        Manage identities
+      </button>
     </div>
-  {:else}
-    {#if $inboxError}
-      <p class="error banner">Receive failed: {$inboxError}</p>
-    {/if}
-
-    {#if diagError}
-      <p class="error banner">Diagnostic failed: {diagError}</p>
-    {/if}
-
-    {#if diag}
-      <div class="diagnostic">
-        <div class="diagnostic-header">
-          <h3>Receive diagnostic</h3>
-          <button type="button" class="dismiss" onclick={dismissDiagnostic}>
-            Dismiss
-          </button>
+  </div>
+{:else}
+  <div class="chat" class:narrow={isNarrow}>
+    {#if showList}
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Chats</h2>
+          <button
+            type="button"
+            class="primary new-chat"
+            onclick={openPicker}
+            title="New chat"
+          >+ New chat</button>
         </div>
-        <table class="kv">
-          <tbody>
-            <tr><th>Identity</th><td>{diag.identity}</td></tr>
-            <tr>
-              <th>Recipient ID</th>
-              <td><code>{diag.recipient_id_hex}</code></td>
-            </tr>
-            <tr>
-              <th>Zones polled</th>
-              <td>
-                {#each diag.zones_polled as z}
-                  <code class="zone-pill">{z}</code>
-                {/each}
-                <span class="muted small">
-                  ({diag.slots_per_zone} slots each =
-                  {diag.zones_polled.length * diag.slots_per_zone} lookups)
-                </span>
-              </td>
-            </tr>
-            <tr>
-              <th>Pinned contacts</th>
-              <td>
-                {diag.pinned_contacts}
-                {#if diag.tofu_mode}
-                  <span class="warn small">
-                    · TOFU mode — any verified manifest is accepted
-                  </span>
-                {/if}
-              </td>
-            </tr>
-            <tr>
-              <th>Manifests on wire</th>
-              <td>{diag.manifests_found.length}</td>
-            </tr>
-            <tr>
-              <th>Inbox after walk</th>
-              <td>
-                {#if diag.inbox_count === 0 && diag.manifests_found.length > 0}
-                  <span class="warn">{diag.inbox_count}</span>
-                {:else}
-                  {diag.inbox_count}
-                {/if}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        {#if diag.notes.length > 0}
-          <p class="muted small"><strong>Notes:</strong></p>
-          <ul class="muted small notes">
-            {#each diag.notes as note}
-              <li>{note}</li>
+        {#if $inboxError}
+          <p class="error small inline-msg">{$inboxError}</p>
+        {/if}
+        {#if $conversations.length === 0}
+          <div class="empty-list">
+            <p class="muted">No conversations yet.</p>
+            <p class="muted small">Use <strong>+ New chat</strong> to start one.</p>
+          </div>
+        {:else}
+          <ul class="conv-list">
+            {#each $conversations as conv (conv.key)}
+              <li>
+                <button
+                  type="button"
+                  class="conv-row"
+                  class:active={conv.key === activeKey}
+                  onclick={() => openConversation(conv.key)}
+                >
+                  <div class="conv-row-top">
+                    <span class="conv-label" class:unknown={conv.key === UNKNOWN_KEY}>
+                      {conv.label}
+                    </span>
+                    <span class="conv-time">{formatTimestamp(conv.lastTimestamp)}</span>
+                  </div>
+                  <div class="conv-row-bottom">
+                    <span class="conv-preview">
+                      {previewPrefix(conv)}{conv.preview || "(no messages yet)"}
+                    </span>
+                    {#if conv.unread > 0}
+                      <span class="unread-dot" aria-label={`${conv.unread} unread`}>
+                        {conv.unread}
+                      </span>
+                    {/if}
+                  </div>
+                </button>
+              </li>
             {/each}
           </ul>
         {/if}
-
-        {#if diag.manifests_found.length === 0}
-          <p class="muted small">
-            No slot manifests visible under any polled zone. If a sender
-            insists they sent a message: cross-check their identity
-            domain matches one of the zones above (the sender publishes
-            under <em>their own</em> zone, not yours), and verify
-            <code>Diagnose</code> on the SENDER side reports a successful
-            publish.
-          </p>
-        {:else}
-          <table class="diag-table">
-            <thead>
-              <tr>
-                <th>Zone</th>
-                <th>Slot</th>
-                <th>Sender</th>
-                <th>msg_id</th>
-                <th>Decision</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each diag.manifests_found as m, i (i)}
-                {@const label = decisionLabel(m.decision)}
-                <tr>
-                  <td><code>{m.zone}</code></td>
-                  <td>{m.slot}</td>
-                  <td>
-                    {#if m.sender_spk_hex}
-                      <code title={m.sender_spk_hex}>
-                        {senderLabel(m.sender_spk_hex)}
-                      </code>
-                    {:else}
-                      <span class="muted">—</span>
-                    {/if}
-                  </td>
-                  <td>
-                    {#if m.msg_id_hex}
-                      <code>{m.msg_id_hex.slice(0, 12)}…</code>
-                    {:else}
-                      <span class="muted">—</span>
-                    {/if}
-                  </td>
-                  <td><span class={label.cls}>{label.text}</span></td>
-                  <td class="diag-note">{m.note}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
+      </aside>
     {/if}
 
-    <div
-      class="mailbox"
-      class:single-pane={isNarrow}
-    >
-      {#if showListPane}
-        <aside class="list-pane">
-          {#if visibleInbox.length === 0}
-            <div class="placeholder">
-              <p class="muted empty-hint">No messages yet.</p>
-              <p class="muted small">
-                Click Refresh above to check for incoming.
-              </p>
-            </div>
-          {:else}
-            {#if selectedCount > 0}
-              <div class="bulk-toolbar" role="toolbar" aria-label="Bulk actions">
-                <span class="bulk-count">{selectedCount} selected</span>
-                <button
-                  type="button"
-                  class="danger"
-                  onclick={onDeleteSelected}
-                >
-                  {pendingBulkDelete
-                    ? `Click again to confirm (${selectedCount})`
-                    : `Delete ${selectedCount}`}
-                </button>
-                <button
-                  type="button"
-                  class="bulk-clear"
-                  onclick={clearSelection}
-                >
-                  Clear
-                </button>
-              </div>
+    {#if showThread}
+      <section class="thread-pane">
+        {#if !activeConversation}
+          <div class="empty-thread">
+            <p class="muted">Select a conversation to start chatting.</p>
+          </div>
+        {:else}
+          <header class="thread-head">
+            {#if isNarrow}
+              <button
+                type="button"
+                class="back-button"
+                onclick={closeConversation}
+                aria-label="Back to conversations"
+              >←</button>
             {/if}
-            <div class="list-meta">
-              <label class="select-all">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  indeterminate={someVisibleSelected}
-                  onchange={() => {
-                    if (allVisibleSelected) {
-                      for (const m of visibleInbox) selected.delete(m.msg_id_hex);
-                    } else {
-                      for (const m of visibleInbox) selected.add(m.msg_id_hex);
-                    }
-                    selected = new Set(selected);
-                  }}
-                  aria-label="Select all visible messages"
-                />
-                <span>Select all</span>
-              </label>
-              <span class="muted small">{visibleInbox.length} total</span>
+            <div class="thread-title">
+              <span class="thread-name">{activeConversation.label}</span>
+              {#if activeConversation.key === UNKNOWN_KEY}
+                <span class="thread-sub muted small">
+                  Senders not pinned to a contact
+                </span>
+              {/if}
             </div>
-            <ul class="msg-list">
-              {#each visibleInbox as msg (msg.msg_id_hex)}
-                {@const isOpen = openMsgId === msg.msg_id_hex}
-                {@const isSelected = selected.has(msg.msg_id_hex)}
-                {@const senderContact = contactForSpk(msg.sender_signing_pk_hex)}
-                {@const senderName = senderContact
-                  ? senderContact.username
-                  : null}
-                {@const senderFull = senderContact
-                  ? `${senderContact.username}@${senderContact.domain}`
-                  : "(unpinned sender)"}
-                {@const initials = avatarInitials(
-                  senderName,
-                  msg.sender_signing_pk_hex,
-                )}
-                {@const avatarBg = avatarBackground(msg.sender_signing_pk_hex)}
-                {@const avatarFg = avatarForeground(msg.sender_signing_pk_hex)}
-                <li
-                  class="msg-item"
-                  class:open={isOpen}
-                  class:unread={!msg.read}
-                  class:selected={isSelected}
-                >
-                  <!-- div + role="button" so nested checkbox + Delete
-                       work reliably across webviews. -->
-                  <div
-                    class="msg-row"
-                    role="button"
-                    tabindex="0"
-                    aria-pressed={isOpen}
-                    onclick={() => selectMessage(msg.msg_id_hex)}
-                    onkeydown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        selectMessage(msg.msg_id_hex);
-                      }
-                    }}
-                  >
-                    <!-- Avatar swaps to checkbox on hover/select. -->
-                    <span
-                      class="avatar-slot"
-                      class:has-checkbox={isSelected}
-                    >
-                      <span
-                        class="avatar"
-                        style="background:{avatarBg};color:{avatarFg};"
-                        aria-hidden="true"
-                      >{initials}</span>
-                      <span class="check-overlay">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onclick={(e) => toggleSelect(msg.msg_id_hex, e)}
-                          aria-label="Select message"
-                        />
-                      </span>
-                    </span>
-                    <span class="msg-body">
-                      <span class="msg-line-1">
-                        <span class="sender">{senderFull}</span>
-                        <span class="ts">{formatRowTimestamp(msg.timestamp)}</span>
-                      </span>
-                      <span class="snippet">{snippet(msg.plaintext_utf8)}</span>
-                    </span>
-                    <span class="trailing-dot" aria-hidden="true">
-                      <span class="unread-dot" class:on={!msg.read}>●</span>
-                    </span>
-                    <!-- stopPropagation so Delete doesn't also open the row. -->
-                    <button
-                      type="button"
-                      class="row-delete danger"
-                      class:armed={pendingDeleteId === msg.msg_id_hex}
-                      title={pendingDeleteId === msg.msg_id_hex
-                        ? "Click again to confirm"
-                        : "Delete this message"}
-                      aria-label="Delete this message"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        void onDeleteOne(msg.msg_id_hex);
-                      }}
-                      onkeydown={(e) => {
-                        // Stop Enter/Space from also opening the row.
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.stopPropagation();
-                        }
-                      }}
-                    >
-                      {pendingDeleteId === msg.msg_id_hex ? "Confirm?" : "Delete"}
-                    </button>
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </aside>
-      {/if}
-
-      {#if showReadingPane}
-        <article class="read-pane">
-          {#if openMsg === null}
-            <div class="reading-empty">
-              <div class="reading-empty-bubble" aria-hidden="true">
-                <span>No message selected</span>
-              </div>
-              <p class="muted">
-                Pick a message from the list to read it here.
-              </p>
-            </div>
-          {:else}
-            {@const msg = openMsg}
-            {@const senderContact = contactForSpk(msg.sender_signing_pk_hex)}
-            {@const senderName = senderContact
-              ? senderContact.username
-              : null}
-            {@const senderFull = senderContact
-              ? `${senderContact.username}@${senderContact.domain}`
-              : "(unpinned sender)"}
-            {@const senderShort = senderContact
-              ? senderContact.username
-              : msg.sender_signing_pk_hex.slice(0, 16) + "…"}
-            {@const initials = avatarInitials(
-              senderName,
-              msg.sender_signing_pk_hex,
-            )}
-            {@const avatarBg = avatarBackground(msg.sender_signing_pk_hex)}
-            {@const avatarFg = avatarForeground(msg.sender_signing_pk_hex)}
-            {@const isCode = looksLikeCode(msg.plaintext_utf8)}
-            <header class="read-header">
-              <div class="read-header-left">
-                {#if isNarrow}
+            <div class="thread-menu-wrap">
+              <button
+                type="button"
+                class="icon-btn-sm"
+                onclick={toggleThreadMenu}
+                aria-haspopup="true"
+                aria-expanded={threadMenuOpen}
+                aria-label="Conversation actions"
+                title="Actions"
+                disabled={clearing}
+              >⋯</button>
+              {#if threadMenuOpen}
+                <div class="thread-menu" role="menu">
                   <button
                     type="button"
-                    class="back-button"
-                    onclick={closeDetail}
-                    title="Back to inbox"
-                    aria-label="Back to inbox"
+                    class="thread-menu-item danger-text"
+                    onclick={clearChat}
+                    disabled={clearing || activeConversation.messages.length === 0}
                   >
-                    ←
+                    {clearing ? "Clearing…" : "Clear chat"}
                   </button>
-                {/if}
-                <span
-                  class="avatar avatar-lg"
-                  style="background:{avatarBg};color:{avatarFg};"
-                  aria-hidden="true"
-                >{initials}</span>
-                <div class="read-sender">
-                  <div class="read-sender-name">{senderShort}</div>
-                  <div class="read-sender-meta">
-                    <span class="muted">{senderFull}</span>
-                    <span class="dot-sep" aria-hidden="true">·</span>
-                    <span class="muted">
-                      {formatHeaderTimestamp(msg.timestamp)}
-                    </span>
+                </div>
+              {/if}
+            </div>
+          </header>
+
+          <div class="messages" bind:this={threadEl}>
+            {#if activeConversation.messages.length === 0}
+              <div class="empty-thread inline">
+                <p class="muted small">No messages yet — say hi.</p>
+              </div>
+            {/if}
+            {#each activeConversation.messages as m (m.msg_id_hex)}
+              <div class="bubble-row" class:out={m.direction === "out"}>
+                <div class="bubble" class:out={m.direction === "out"}>
+                  {#if m.sender_spk_hex}
+                    <div class="bubble-sender">
+                      <code>{m.sender_spk_hex.slice(0, 16)}…</code>
+                    </div>
+                  {/if}
+                  <div class="bubble-body">{renderEmoticons(m.plaintext_utf8)}</div>
+                  <div class="bubble-meta">
+                    <span class="bubble-time">{formatBubbleTimestamp(m.timestamp)}</span>
+                    {#if m.direction === "in" && activeConversation.key !== UNKNOWN_KEY}
+                      <button
+                        type="button"
+                        class="bubble-action"
+                        onclick={() => startReply(m)}
+                      >Reply</button>
+                    {/if}
                   </div>
                 </div>
               </div>
-              <div class="read-actions">
-                <button
-                  type="button"
-                  class="primary"
-                  disabled={!senderContact}
-                  title={senderContact
-                    ? "Compose a reply to this sender."
-                    : "Pin this sender first to reply."}
-                  onclick={() => reply(msg)}
-                >
-                  Reply
-                </button>
-                <button
-                  type="button"
-                  class="danger"
-                  title="Permanently delete this message."
-                  onclick={() => onDeleteOne(msg.msg_id_hex)}
-                >
-                  {pendingDeleteId === msg.msg_id_hex
-                    ? "Click again to confirm"
-                    : "Delete"}
-                </button>
-              </div>
-            </header>
+            {/each}
+          </div>
 
-            <div class="read-body">
-              <div class="read-bubble" class:code={isCode}>
-                {msg.plaintext_utf8}
-              </div>
-              {#if !senderContact}
-                <p class="unpinned-hint muted small">
-                  This message is from an un-pinned sender. You can
+          {#if activeConversation.key === UNKNOWN_KEY}
+            <div class="composer-disabled">
+              <p class="muted small">
+                Pin one of these senders as a contact to reply.
+              </p>
+            </div>
+          {:else}
+            <form class="composer" onsubmit={(e) => { e.preventDefault(); void send(); }}>
+              {#if replyTo}
+                <div class="reply-pill">
+                  <div class="reply-text">
+                    <span class="reply-tag">Replying to</span>
+                    <code>{replyTo.msg_id_hex.slice(0, 12)}…</code>
+                    <span class="reply-preview">
+                      {replyTo.plaintext_utf8.slice(0, 80)}
+                      {replyTo.plaintext_utf8.length > 80 ? "…" : ""}
+                    </span>
+                  </div>
+                  <button type="button" class="reply-cancel" onclick={cancelReply}>×</button>
+                </div>
+              {/if}
+              {#if sendError}
+                <p class="error small inline-msg">{sendError}</p>
+              {/if}
+              <div class="composer-row">
+                <div class="emoji-wrap">
                   <button
                     type="button"
-                    class="link-button"
-                    onclick={() => addUnpinnedSender(msg.sender_signing_pk_hex)}
-                  >
-                    add them to contacts
-                  </button>
-                  to enable Reply.
-                </p>
-              {/if}
-              <details class="meta-disclosure">
-                <summary>Message details</summary>
-                <table class="kv">
-                  <tbody>
-                    <tr>
-                      <th>Sender</th>
-                      <td>
-                        {#if senderContact}
-                          {senderContact.username}@{senderContact.domain}
-                        {:else}
-                          <code title={msg.sender_signing_pk_hex}>
-                            {msg.sender_signing_pk_hex.slice(0, 32)}…
-                          </code>
-                        {/if}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th>Received</th>
-                      <td>{formatTimestampDetail(msg.timestamp)}</td>
-                    </tr>
-                    <tr>
-                      <th>Message ID</th>
-                      <td><code class="full-id">{msg.msg_id_hex}</code></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </details>
-            </div>
+                    class="emoji-button"
+                    onclick={toggleEmoji}
+                    aria-haspopup="true"
+                    aria-expanded={emojiOpen}
+                    title="Emoji"
+                    disabled={sending}
+                  >🙂</button>
+                  {#if emojiOpen}
+                    <div class="emoji-panel" role="dialog" aria-label="Emoji picker">
+                      {#each PICKER_EMOJI as glyph}
+                        <button
+                          type="button"
+                          class="emoji-cell"
+                          onclick={() => insertEmoji(glyph)}
+                        >{glyph}</button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+                <textarea
+                  bind:this={composerEl}
+                  bind:value={draft}
+                  onkeydown={onComposerKeydown}
+                  placeholder={`Message ${activeConversation.username}…`}
+                  rows="1"
+                  disabled={sending}
+                ></textarea>
+                <button
+                  type="submit"
+                  class="primary send-button"
+                  disabled={sending || !draft.trim()}
+                >
+                  {sending ? "Sending…" : "Send"}
+                </button>
+              </div>
+            </form>
           {/if}
-        </article>
-      {/if}
+        {/if}
+      </section>
+    {/if}
+  </div>
+
+  {#if pickerOpen}
+    <div
+      class="picker-backdrop"
+      onclick={closePicker}
+      aria-hidden="true"
+    ></div>
+    <div
+      class="picker"
+      role="dialog"
+      aria-modal="true"
+      aria-label="New chat"
+      tabindex="-1"
+      onkeydown={onPickerKeydown}
+    >
+      <header class="picker-head">
+        <h3>New chat</h3>
+        <button type="button" class="icon-close" onclick={closePicker} aria-label="Close">×</button>
+      </header>
+      <div class="picker-body">
+        <label class="search-label">
+          <span>Search contacts</span>
+          <input
+            bind:this={pickerSearchEl}
+            type="text"
+            bind:value={pickerQuery}
+            placeholder="username or username@domain"
+          />
+        </label>
+        {#if filteredContacts.length === 0}
+          <p class="muted small">No matching contacts.</p>
+        {:else}
+          <ul class="picker-list">
+            {#each filteredContacts as c (c.username)}
+              <li>
+                <button type="button" class="picker-row" onclick={() => pickContact(c)}>
+                  <span class="picker-name">{c.username}@{c.domain}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <hr class="divider" />
+        <form class="fetch-form" onsubmit={(e) => { e.preventDefault(); void fetchAndOpen(); }}>
+          <label>
+            <span>Or fetch a new contact by address</span>
+            <input
+              type="text"
+              bind:value={pickerFetchAddress}
+              placeholder="user@example.com"
+              disabled={pickerBusy}
+            />
+          </label>
+          {#if pickerError}
+            <p class="error small inline-msg">{pickerError}</p>
+          {/if}
+          <button type="submit" class="primary" disabled={pickerBusy}>
+            {pickerBusy ? "Fetching…" : "Fetch and open"}
+          </button>
+        </form>
+      </div>
     </div>
   {/if}
-</section>
+{/if}
 
 <style>
-  .inbox-page {
+  .locked-pane {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 2rem;
+  }
+  .locked-card {
+    text-align: center;
+    max-width: 360px;
+  }
+  .locked-card h2 {
+    margin: 0 0 0.5em;
+  }
+
+  .chat {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .chat.narrow {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--surface);
     display: flex;
     flex-direction: column;
-    height: 100%;
     min-height: 0;
   }
-  .page-header {
+  .sidebar-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 1rem;
-    gap: 0.6rem;
-    flex-shrink: 0;
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border-soft);
   }
-  .header-titles {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    min-width: 0;
-  }
-  h1 {
+  .sidebar-head h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
   }
-  .unread-pill {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--accent-strong);
-    background: var(--accent-soft);
-    border: 1px solid var(--border-accent);
-    border-radius: 999px;
-    padding: 0.18em 0.65em;
-    text-transform: lowercase;
-    letter-spacing: 0.01em;
+  .new-chat {
+    padding: 0.4em 0.75em;
+    font-size: 12.5px;
+    min-height: 32px;
   }
-  .small {
-    font-size: 12px;
+  .empty-list {
+    padding: 1.5rem 1rem;
+    text-align: center;
   }
-  .actions {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
+  .empty-list p {
+    margin: 0.25em 0;
   }
-  .overflow-wrap {
-    position: relative;
-  }
-  .overflow-button {
-    font-size: 16px;
-    line-height: 1;
-    padding: 0.3em 0.7em;
-  }
-  .overflow-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
-    z-index: 10;
+  .conv-list {
     list-style: none;
     margin: 0;
-    padding: 0.3rem;
-    min-width: 170px;
+    padding: 0.25rem 0.4rem;
+    overflow-y: auto;
+    flex: 1 1 auto;
+  }
+  .conv-list li {
+    margin: 0;
+  }
+  .conv-row {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    cursor: pointer;
+    min-height: 56px;
+  }
+  .conv-row:hover {
+    background: var(--surface-alt);
+    border-color: var(--border-soft);
+  }
+  .conv-row.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+  .conv-row-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .conv-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-strong);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conv-label.unknown {
+    color: var(--muted-strong);
+    font-style: italic;
+  }
+  .conv-time {
+    font-size: 11px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .conv-row-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .conv-preview {
+    color: var(--muted);
+    font-size: 12.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+  }
+  .unread-dot {
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 999px;
+    min-width: 18px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .thread-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg);
+  }
+  .thread-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .thread-menu-wrap {
+    position: relative;
+    flex-shrink: 0;
+  }
+  .icon-btn-sm {
+    width: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 16px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .thread-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-md);
+    padding: 0.4rem;
+    min-width: 160px;
   }
-  .overflow-menu li {
-    margin: 0;
-  }
-  .overflow-menu button {
+  .thread-menu-item {
     width: 100%;
     text-align: left;
     background: transparent;
     border: 1px solid transparent;
-    padding: 0.45em 0.7em;
-    font-size: 13px;
+    padding: 0.5em 0.7em;
+    border-radius: 6px;
   }
-  .overflow-menu button:hover:not(:disabled) {
+  .thread-menu-item:hover:not(:disabled) {
     background: var(--accent-softer);
     border-color: var(--accent);
   }
-
-  .placeholder {
-    padding: 2rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    text-align: center;
-  }
-  .empty-hint {
-    margin: 0 0 0.4em;
-    font-size: 14px;
-  }
-  .banner {
-    margin: 0 0 0.85rem;
-    padding: 0.55em 0.85em;
-    border-radius: var(--radius-sm);
-    background: var(--danger-soft);
-    border: 1px solid var(--danger-border);
+  .danger-text {
     color: var(--danger);
-    font-size: 13px;
   }
-
-  /* Two-pane mailbox: list ~360px, reading pane fills the rest. */
-  .mailbox {
-    display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 1rem;
-    flex: 1;
-    min-height: 0;
+  .danger-text:hover:not(:disabled) {
+    background: var(--danger-soft);
+    border-color: var(--danger);
+    color: var(--danger);
   }
-  .mailbox.single-pane {
-    grid-template-columns: 1fr;
+  .back-button {
+    width: 36px;
+    min-height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 18px;
   }
-  .list-pane {
+  .thread-title {
     display: flex;
     flex-direction: column;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    box-shadow: var(--shadow-sm);
-    min-height: 0;
+    gap: 1px;
+    min-width: 0;
+    flex: 1 1 auto;
   }
-  .read-pane {
+  .thread-name {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text-strong);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .thread-sub {
+    font-style: italic;
+  }
+  .messages {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 1rem 1rem 0.5rem;
     display: flex;
     flex-direction: column;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-sm);
-    overflow: hidden;
-    min-height: 0;
+    gap: 0.5rem;
   }
-
-  /* Bulk-action toolbar, scoped to the list pane. */
-  .bulk-toolbar {
+  .empty-thread {
+    flex: 1 1 auto;
     display: flex;
     align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  .empty-thread.inline {
+    flex: 0 0 auto;
+    padding: 0.5rem;
+  }
+  .bubble-row {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .bubble-row.out {
+    justify-content: flex-end;
+  }
+  .bubble {
+    max-width: min(560px, 70%);
+    padding: 0.55rem 0.75rem;
+    border-radius: 14px;
+    background: var(--bubble-theirs);
+    color: var(--bubble-theirs-text);
+    border: 1px solid var(--border-soft);
+    box-shadow: var(--shadow-sm);
+    border-bottom-left-radius: 4px;
+  }
+  .bubble.out {
+    background: var(--bubble-mine);
+    color: var(--bubble-mine-text);
+    border-color: transparent;
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 4px;
+  }
+  .bubble-sender {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 0.25rem;
+  }
+  .bubble-body {
+    font-size: 13.5px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.4;
+  }
+  .bubble-meta {
+    margin-top: 0.35rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     gap: 0.5rem;
-    background: var(--accent-soft);
-    border-bottom: 1px solid var(--border-accent);
-    padding: 0.45rem 0.75rem;
   }
-  .bulk-count {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--accent-strong);
-    margin-right: auto;
+  .bubble-time {
+    font-size: 10.5px;
+    color: var(--muted);
+    opacity: 0.85;
   }
-  .bulk-clear {
-    font-size: 12px;
-    padding: 0.3em 0.7em;
+  .bubble.out .bubble-time {
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .bubble-action {
+    background: transparent;
+    border: 0;
+    padding: 0 0.2rem;
+    min-height: 0;
+    color: var(--accent);
+    font-size: 11px;
+  }
+  .bubble-action:hover {
+    text-decoration: underline;
+    border: 0;
+    color: var(--accent);
   }
 
-  .list-meta {
+  .composer {
+    padding: 0.5rem 0.75rem 0.85rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .composer-disabled {
+    padding: 1rem;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .reply-pill {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--accent-softer);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+  .reply-text {
+    overflow: hidden;
+  }
+  .reply-tag {
+    color: var(--muted);
+    margin-right: 0.4em;
+  }
+  .reply-preview {
+    color: var(--muted-strong);
+    margin-left: 0.4em;
+  }
+  .reply-cancel {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    width: 22px;
+    min-height: 22px;
+    line-height: 1;
+    font-size: 16px;
+    color: var(--muted);
+  }
+  .composer-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-end;
+  }
+  .composer-row textarea {
+    resize: vertical;
+    min-height: 40px;
+    max-height: 160px;
+    width: auto;
+    flex: 1 1 auto;
+  }
+  .send-button {
+    flex-shrink: 0;
+    min-height: 40px;
+  }
+  .emoji-wrap {
+    position: relative;
+    flex-shrink: 0;
+  }
+  .emoji-button {
+    width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .emoji-panel {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    padding: 0.4rem;
+    display: grid;
+    grid-template-columns: repeat(7, 32px);
+    gap: 2px;
+  }
+  .emoji-cell {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    border-radius: 6px;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .emoji-cell:hover {
+    background: var(--accent-softer);
+    border-color: var(--accent);
+  }
+  .inline-msg {
+    margin: 0;
+  }
+
+  .picker-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 18, 30, 0.4);
+    z-index: 50;
+    border: 0;
+  }
+  .picker {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(440px, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    z-index: 51;
+  }
+  .picker-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.6rem;
-    padding: 0.55rem 0.75rem;
+    padding: 1rem 1.1rem;
     border-bottom: 1px solid var(--border-soft);
-    background: var(--surface-alt);
   }
-  .select-all {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
+  .picker-head h3 {
     margin: 0;
-    cursor: pointer;
-    font-size: 12px;
-    color: var(--muted);
-    user-select: none;
+    font-size: 15px;
   }
-  .select-all input {
-    width: auto;
-    margin: 0;
-    cursor: pointer;
-  }
-
-  .msg-list {
-    list-style: none;
-    margin: 0;
+  .icon-close {
+    width: 32px;
+    min-height: 32px;
     padding: 0;
+    border-radius: 50%;
+    font-size: 18px;
+    line-height: 1;
+  }
+  .picker-body {
+    padding: 1rem 1.1rem 1.1rem;
     overflow-y: auto;
-    flex: 1;
-    min-height: 0;
   }
-  .msg-item + .msg-item {
-    border-top: 1px solid var(--border-soft);
+  .search-label {
+    margin-bottom: 0.6rem;
   }
-  .msg-item.unread {
-    background: var(--accent-softer);
+  .picker-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.6rem;
+    max-height: 200px;
+    overflow-y: auto;
   }
-  .msg-item.selected {
-    background: var(--accent-soft);
-  }
-  .msg-item.open {
-    background: var(--accent-soft);
-  }
-  .msg-row {
-    position: relative;
-    display: flex;
-    align-items: center;
+  .picker-row {
     width: 100%;
     text-align: left;
     background: transparent;
-    border: 0;
-    padding: 0.7em 0.85em;
-    cursor: pointer;
-    border-radius: 0;
-    gap: 0.7em;
-    color: inherit;
-  }
-  .msg-row:hover {
-    background: var(--row-hover);
-    color: inherit;
-  }
-  .msg-row:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-  .msg-item.open .msg-row {
-    background: transparent;
-  }
-
-  /* Hover-reveal Delete; opacity flips on row hover or focus. */
-  .row-delete {
-    margin-left: 0.4em;
-    padding: 0.25em 0.7em;
-    font-size: 11px;
-    line-height: 1.2;
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition: opacity 0.12s ease;
-    flex-shrink: 0;
-  }
-  .msg-row:hover .row-delete,
-  .msg-row:focus-within .row-delete,
-  .row-delete:focus-visible,
-  .row-delete.armed {
-    opacity: 1;
-  }
-
-  /* Avatar slot doubles as the checkbox slot on hover/select. */
-  .avatar-slot {
-    position: relative;
-    width: 36px;
-    height: 36px;
-    flex-shrink: 0;
-  }
-  .avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    line-height: 1;
-    user-select: none;
-  }
-  .avatar-lg {
-    width: 44px;
-    height: 44px;
-    font-size: 16px;
-  }
-  .check-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--surface);
-    border-radius: 50%;
-    opacity: 0;
-    transition: opacity 0.12s ease;
-    pointer-events: none;
-  }
-  .check-overlay input {
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-    margin: 0;
-    pointer-events: auto;
-  }
-  .avatar-slot.has-checkbox .check-overlay,
-  .msg-row:hover .check-overlay,
-  .msg-row:focus-visible .check-overlay {
-    opacity: 1;
-  }
-
-  .msg-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.18em;
-    min-width: 0;
-    flex: 1;
-  }
-  .msg-line-1 {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 0.6em;
-  }
-  .sender {
-    font-size: 13.5px;
-    color: var(--text);
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  .msg-item.unread .sender {
-    font-weight: 700;
-  }
-  .ts {
-    font-size: 11px;
-    color: var(--muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-    font-variant-numeric: tabular-nums;
-  }
-  .snippet {
-    font-size: 12.5px;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    line-height: 1.4;
-  }
-  .msg-item.unread .snippet {
-    color: var(--muted-strong);
-  }
-  .trailing-dot {
-    width: 0.85em;
-    text-align: center;
-    flex-shrink: 0;
-  }
-  .unread-dot {
-    color: transparent;
-    font-size: 10px;
-    line-height: 1;
-  }
-  .unread-dot.on {
-    color: var(--accent);
-  }
-
-  .read-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.85rem;
-    padding: 0.85rem 1rem;
-    border-bottom: 1px solid var(--border-soft);
-    background: var(--surface);
-  }
-  .read-header-left {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    min-width: 0;
-    flex: 1;
-  }
-  .back-button {
-    background: transparent;
     border: 1px solid transparent;
-    border-radius: 50%;
-    width: 34px;
-    height: 34px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    line-height: 1;
-    color: var(--muted-strong);
-    flex-shrink: 0;
-    padding: 0;
+    padding: 0.5em 0.7em;
+    border-radius: 6px;
+    min-height: 40px;
   }
-  .back-button:hover:not(:disabled) {
-    background: var(--surface-alt);
-    border-color: var(--border);
-    color: var(--accent);
+  .picker-row:hover {
+    background: var(--accent-softer);
+    border-color: var(--accent);
   }
-  .read-sender {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 0;
+  .picker-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
   }
-  .read-sender-name {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-strong);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .divider {
+    margin: 0.75rem 0;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
   }
-  .read-sender-meta {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 12px;
-    flex-wrap: wrap;
-  }
-  .dot-sep {
-    color: var(--muted);
-  }
-  .read-actions {
-    display: flex;
-    gap: 0.4rem;
-    flex-shrink: 0;
-  }
-  .read-body {
-    flex: 1;
-    overflow: auto;
-    padding: 1.25rem 1.4rem 1.5rem;
-    min-height: 0;
-  }
-  /* Soft-bubble message body; the code variant swaps to monospace. */
-  .read-bubble {
-    background: var(--accent-soft);
-    border: 1px solid var(--border-accent);
-    border-radius: var(--radius-lg);
-    padding: 0.95em 1.1em;
-    font-size: 14.5px;
-    line-height: 1.55;
-    color: var(--text-strong);
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    max-width: 720px;
-    box-shadow: var(--shadow-sm);
-  }
-  .read-bubble.code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 13px;
-    background: var(--surface-alt);
-    border-color: var(--border);
-  }
-  .unpinned-hint {
-    margin: 0.85em 0 0;
-    max-width: 720px;
-  }
-  .link-button {
-    background: transparent;
-    color: var(--accent);
-    border: none;
-    padding: 0;
-    text-decoration: underline;
-    font: inherit;
-    cursor: pointer;
-  }
-  .link-button:hover:not(:disabled) {
-    color: var(--accent-strong);
-    background: transparent;
-  }
-  .meta-disclosure {
-    margin-top: 1.25em;
-    font-size: 12px;
-    max-width: 720px;
-  }
-  .meta-disclosure summary {
-    cursor: pointer;
-    color: var(--muted);
-    user-select: none;
-    padding: 0.1em 0;
-  }
-  .meta-disclosure table.kv {
-    margin-top: 0.45em;
-  }
-  .meta-disclosure table.kv th {
-    width: 110px;
-    color: var(--muted);
-    font-weight: 600;
-    text-align: left;
-    padding-right: 0.6em;
-  }
-  .full-id {
-    user-select: all;
-    word-break: break-all;
+  .fetch-form button {
+    width: 100%;
   }
 
-  .reading-empty {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem;
-    gap: 1rem;
-    text-align: center;
-  }
-  .reading-empty-bubble {
-    background: var(--accent-soft);
-    border: 1px dashed var(--border-accent);
-    border-radius: var(--radius-lg);
-    padding: 1.25em 1.5em;
-    font-size: 13px;
-    color: var(--muted-strong);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .diagnostic {
-    margin: 0 0 1rem;
-    padding: 1rem 1.1rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-sm);
-  }
-  .diagnostic-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.5rem;
-  }
-  .diagnostic h3 {
-    margin: 0;
-    font-size: 0.95rem;
-  }
-  .diagnostic table.kv th {
-    width: 130px;
-  }
-  .zone-pill {
-    margin-right: 0.4em;
-  }
-  .notes {
-    margin-top: 0.2em;
-    padding-left: 1.2em;
-  }
-  .diag-table {
-    margin-top: 0.6rem;
-    font-size: 12px;
-  }
-  .diag-note {
-    color: var(--muted);
-    font-size: 11px;
-    max-width: 300px;
-  }
-  .dismiss {
-    font-size: 12px;
-    padding: 0.25em 0.7em;
-  }
-
-  /* Narrow viewport tightens the read-pane padding. */
-  @media (max-width: 700px) {
-    .read-header {
-      padding: 0.7rem 0.85rem;
-    }
-    .read-actions {
-      gap: 0.3rem;
-    }
-    .read-body {
-      padding: 1rem 0.95rem 1.25rem;
-    }
-    .read-bubble {
-      font-size: 14px;
+  @media (max-width: 560px) {
+    .chat:not(.narrow) {
+      grid-template-columns: 1fr;
     }
   }
 </style>

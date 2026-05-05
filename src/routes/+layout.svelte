@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { get } from "svelte/store";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
@@ -8,8 +8,9 @@
     publishedStatus,
     refreshActiveIdentity,
   } from "$lib/stores/identity";
-  import { clearInbox, hydrateInbox } from "$lib/stores/inbox";
+  import { clearInbox, hydrateInbox, pollInbox } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
+  import { clearSent, hydrateSent } from "$lib/stores/sent";
   import {
     api,
     isCommandError,
@@ -18,57 +19,82 @@
 
   let { children } = $props();
 
-  // Header switcher state.
   let identities = $state<IdentitySummary[]>([]);
   let switchTarget = $state<string>("");
   let switchPassphrase = $state<string>("");
   let switchBusy = $state<boolean>(false);
   let switchError = $state<string>("");
-  let menuOpen = $state<boolean>(false);
+  let identityMenuOpen = $state<boolean>(false);
+  let overflowOpen = $state<boolean>(false);
 
-  // True when the user has no identities and nothing unlocked. Drives
-  // sidebar dimming and the bounce to the onboarding wizard.
   let firstRun = $derived(identities.length === 0 && !$activeIdentity);
+
+  // Background poll handle. Started after unlock, cleared on lock.
+  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  const POLL_INTERVAL_MS = 60_000;
+
+  function startPolling() {
+    if (pollHandle !== null) return;
+    pollHandle = setInterval(() => {
+      void pollInbox();
+    }, POLL_INTERVAL_MS);
+  }
+
+  function stopPolling() {
+    if (pollHandle !== null) {
+      clearInterval(pollHandle);
+      pollHandle = null;
+    }
+  }
 
   onMount(async () => {
     await refreshActiveIdentity();
     await reloadList();
-    if (get(activeIdentity)) {
-      // Hydrate so the Inbox shows pinned-contact attribution on first paint.
+    const ident = get(activeIdentity);
+    if (ident) {
+      hydrateSent(ident.username);
       void hydrateInbox();
       void refreshContacts();
+      void pollInbox();
+      startPolling();
     } else if (
       identities.length === 0 &&
       page.url.pathname !== "/identities"
     ) {
-      // No identities on disk; bounce to the onboarding wizard.
       void goto("/identities?onboarding=1", { replaceState: true });
     }
   });
 
-  // No-op for dimmed sidebar links during onboarding.
-  function blockNav(e: Event) {
-    e.preventDefault();
-  }
+  onDestroy(() => stopPolling());
 
   async function reloadList() {
     try {
       identities = await api.listIdentities();
     } catch {
-      // Best-effort: the Identities page surfaces real errors.
       identities = [];
     }
   }
 
-  function toggleMenu() {
-    menuOpen = !menuOpen;
+  function toggleIdentityMenu() {
+    identityMenuOpen = !identityMenuOpen;
+    overflowOpen = false;
     switchError = "";
-    if (menuOpen) {
+    if (identityMenuOpen) {
       void reloadList();
     } else {
       switchTarget = "";
       switchPassphrase = "";
     }
+  }
+
+  function toggleOverflow() {
+    overflowOpen = !overflowOpen;
+    identityMenuOpen = false;
+  }
+
+  function closeMenus() {
+    overflowOpen = false;
+    identityMenuOpen = false;
   }
 
   function pickTarget(username: string) {
@@ -91,15 +117,20 @@
     try {
       await api.switchIdentity(switchTarget, switchPassphrase);
       switchPassphrase = "";
+      const target = switchTarget;
       switchTarget = "";
-      menuOpen = false;
-      // Wipe in-memory state so the previous identity doesn't bleed through.
+      identityMenuOpen = false;
+      stopPolling();
       clearInbox();
+      clearSent();
+      contacts.set([]);
       await refreshActiveIdentity();
       await reloadList();
+      hydrateSent(target);
       void hydrateInbox();
-      contacts.set([]);
       void refreshContacts();
+      void pollInbox();
+      startPolling();
     } catch (err) {
       switchError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -108,17 +139,16 @@
   }
 
   async function lock() {
-    // Clear the store first so the UI flips immediately even if the
-    // backend call hangs; every route gates on $activeIdentity.
     activeIdentity.set(null);
     publishedStatus.set(null);
+    stopPolling();
     clearInbox();
+    clearSent();
     contacts.set([]);
-    menuOpen = false;
+    closeMenus();
     switchTarget = "";
     switchPassphrase = "";
 
-    // Bounce to Inbox; Compose/Settings retain form state on a gate flip.
     void goto("/", { replaceState: false });
 
     switchBusy = true;
@@ -132,146 +162,158 @@
     }
   }
 
-  // `alwaysEnabled: true` exempts an entry from first-run dimming.
-  const navItems = [
-    { href: "/", label: "Inbox" },
-    { href: "/compose", label: "Compose" },
-    { href: "/contacts", label: "Contacts" },
-    { href: "/identities", label: "Identities" },
-    { href: "/settings", label: "Settings" },
-    { href: "/about", label: "About", alwaysEnabled: true },
-  ];
+  function navTo(path: string) {
+    closeMenus();
+    void goto(path);
+  }
+
+  // Click-outside handler for menus.
+  function handleDocClick(e: MouseEvent) {
+    if (!(overflowOpen || identityMenuOpen)) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (!target.closest(".topbar")) closeMenus();
+  }
 </script>
+
+<svelte:document onclick={handleDocClick} />
 
 <div class="app">
   <header class="topbar">
-    <div class="brand">DNSMesh</div>
-    <div class="active-identity">
+    <a class="brand" href="/" onclick={closeMenus} title="Back to chats">DNSMesh</a>
+    <div class="header-actions">
       {#if !firstRun}
-      <button
-        type="button"
-        class="identity-button"
-        onclick={toggleMenu}
-        aria-haspopup="true"
-        aria-expanded={menuOpen}
-      >
-        {#if $activeIdentity}
-          <span class="user">{$activeIdentity.username}</span>
-          <span class="at">@</span>
-          <span class="domain">{$activeIdentity.domain}</span>
-        {:else}
-          <span class="locked">No identity unlocked</span>
-        {/if}
-        <span class="chev" aria-hidden="true">{menuOpen ? "▲" : "▼"}</span>
-      </button>
-      {#if menuOpen}
-        <div class="identity-menu" role="menu">
-          {#if identities.length === 0}
-            <p class="muted small menu-empty">
-              No identities yet. Create one from the Identities page.
-            </p>
-          {:else}
-            <ul class="menu-list">
-              {#each identities as ident (ident.username)}
-                <li>
-                  <button
-                    type="button"
-                    class="menu-item"
-                    class:active={ident.is_active}
-                    class:selected={switchTarget === ident.username}
-                    onclick={() => pickTarget(ident.username)}
-                    disabled={ident.is_active}
-                  >
-                    <span class="menu-name">
-                      {ident.username}@{ident.domain}
-                    </span>
-                    {#if ident.is_active}
-                      <span class="menu-tag pass">ACTIVE</span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
-            {#if switchTarget && switchTarget !== $activeIdentity?.username}
-              <form
-                class="menu-form"
-                onsubmit={(e) => {
-                  e.preventDefault();
-                  submitSwitch();
-                }}
-              >
-                <label>
-                  <span>Passphrase for {switchTarget}</span>
-                  <input
-                    type="password"
-                    bind:value={switchPassphrase}
-                    autocomplete="current-password"
-                  />
-                </label>
-                {#if switchError}
-                  <p class="error small">{switchError}</p>
-                {/if}
-                <div class="menu-actions">
-                  <button class="primary" type="submit" disabled={switchBusy}>
-                    {switchBusy ? "Opening…" : "Open"}
-                  </button>
-                  <button
-                    type="button"
-                    onclick={() => {
-                      switchTarget = "";
-                      switchPassphrase = "";
-                      switchError = "";
-                    }}
-                    disabled={switchBusy}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            {/if}
+        <div class="identity-wrap">
+          <button
+            type="button"
+            class="identity-button"
+            onclick={toggleIdentityMenu}
+            aria-haspopup="true"
+            aria-expanded={identityMenuOpen}
+          >
             {#if $activeIdentity}
-              <div class="menu-actions menu-footer">
-                <button
-                  type="button"
-                  class="danger"
-                  onclick={lock}
-                  disabled={switchBusy}
-                >
-                  Lock active
-                </button>
-              </div>
+              <span class="user">{$activeIdentity.username}</span>
+              <span class="at">@</span>
+              <span class="domain">{$activeIdentity.domain}</span>
+            {:else}
+              <span class="locked">Locked</span>
             {/if}
+            <span class="chev" aria-hidden="true">{identityMenuOpen ? "▲" : "▼"}</span>
+          </button>
+          {#if identityMenuOpen}
+            <div class="menu identity-menu" role="menu">
+              {#if identities.length === 0}
+                <p class="muted small menu-empty">
+                  No identities yet. Open Identities from the menu.
+                </p>
+              {:else}
+                <ul class="menu-list">
+                  {#each identities as ident (ident.username)}
+                    <li>
+                      <button
+                        type="button"
+                        class="menu-item"
+                        class:active={ident.is_active}
+                        class:selected={switchTarget === ident.username}
+                        onclick={() => pickTarget(ident.username)}
+                        disabled={ident.is_active}
+                      >
+                        <span class="menu-name">
+                          {ident.username}@{ident.domain}
+                        </span>
+                        {#if ident.is_active}
+                          <span class="menu-tag pass">ACTIVE</span>
+                        {/if}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+                {#if switchTarget && switchTarget !== $activeIdentity?.username}
+                  <form
+                    class="menu-form"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      submitSwitch();
+                    }}
+                  >
+                    <label>
+                      <span>Passphrase for {switchTarget}</span>
+                      <input
+                        type="password"
+                        bind:value={switchPassphrase}
+                        autocomplete="current-password"
+                      />
+                    </label>
+                    {#if switchError}
+                      <p class="error small">{switchError}</p>
+                    {/if}
+                    <div class="menu-actions">
+                      <button class="primary" type="submit" disabled={switchBusy}>
+                        {switchBusy ? "Opening…" : "Open"}
+                      </button>
+                      <button
+                        type="button"
+                        onclick={() => {
+                          switchTarget = "";
+                          switchPassphrase = "";
+                          switchError = "";
+                        }}
+                        disabled={switchBusy}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                {/if}
+                {#if $activeIdentity}
+                  <div class="menu-actions menu-footer">
+                    <button
+                      type="button"
+                      class="danger"
+                      onclick={lock}
+                      disabled={switchBusy}
+                    >
+                      Lock active
+                    </button>
+                  </div>
+                {/if}
+              {/if}
+            </div>
           {/if}
         </div>
       {/if}
-      {/if}
+      <div class="overflow-wrap">
+        <button
+          type="button"
+          class="icon-button"
+          onclick={toggleOverflow}
+          aria-haspopup="true"
+          aria-expanded={overflowOpen}
+          aria-label="Open menu"
+          title="Menu"
+        >
+          ⋯
+        </button>
+        {#if overflowOpen}
+          <div class="menu overflow-menu" role="menu">
+            <button type="button" class="overflow-item" onclick={() => navTo("/")}>Chat</button>
+            <button type="button" class="overflow-item" onclick={() => navTo("/contacts")}>Contacts</button>
+            <button type="button" class="overflow-item" onclick={() => navTo("/identities")}>Identities</button>
+            <button type="button" class="overflow-item" onclick={() => navTo("/settings")}>Settings</button>
+            <button type="button" class="overflow-item" onclick={() => navTo("/about")}>About</button>
+          </div>
+        {/if}
+      </div>
     </div>
   </header>
 
-  <nav class="sidebar">
-    {#each navItems as item}
-      {@const dimmed = firstRun && !item.alwaysEnabled}
-      <a
-        href={item.href}
-        class:active={page.url.pathname === item.href && !dimmed}
-        class:disabled={dimmed}
-        title={dimmed
-          ? "Create your first identity to continue."
-          : undefined}
-        onclick={dimmed ? blockNav : undefined}
-        data-sveltekit-preload-data="off">{item.label}</a
-      >
-    {/each}
-  </nav>
-
-  <main class="content">
+  <main class="content" class:full={page.url.pathname !== "/"}>
     {@render children()}
   </main>
 </div>
 
 <style>
   :global(:root) {
-    /* System font stack with Inter as fallback. */
     font-family:
       -apple-system,
       BlinkMacSystemFont,
@@ -305,6 +347,10 @@
     --bg: #f4f5f8;
     --surface: #ffffff;
     --surface-alt: #fafbfc;
+    --bubble-mine: #2c5fe1;
+    --bubble-mine-text: #ffffff;
+    --bubble-theirs: #ffffff;
+    --bubble-theirs-text: #1a1a1f;
     --code-bg: rgba(15, 18, 30, 0.05);
     --row-hover: rgba(15, 18, 30, 0.03);
     --shadow-sm: 0 1px 2px rgba(15, 18, 30, 0.04);
@@ -313,7 +359,6 @@
     --radius-md: 10px;
     --radius-lg: 14px;
   }
-  /* OS-driven dark mode (no manual toggle). */
   @media (prefers-color-scheme: dark) {
     :global(:root) {
       --text: #e6e8ed;
@@ -337,6 +382,10 @@
       --bg: #1a1d24;
       --surface: #232730;
       --surface-alt: #2a2f3a;
+      --bubble-mine: #4f7bff;
+      --bubble-mine-text: #ffffff;
+      --bubble-theirs: #2a2f3a;
+      --bubble-theirs-text: #e6e8ed;
       --code-bg: rgba(255, 255, 255, 0.07);
       --row-hover: rgba(255, 255, 255, 0.04);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -358,6 +407,7 @@
     background: var(--surface);
     color: var(--text);
     cursor: pointer;
+    min-height: 36px;
     transition: border-color 0.12s ease, background 0.12s ease,
       box-shadow 0.12s ease, color 0.12s ease;
   }
@@ -477,35 +527,40 @@
 
   .app {
     display: grid;
-    grid-template-columns: 208px 1fr;
     grid-template-rows: 52px 1fr;
-    grid-template-areas:
-      "topbar topbar"
-      "sidebar content";
     height: 100vh;
     background: var(--bg);
   }
   .topbar {
-    grid-area: topbar;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 1.25rem;
+    padding: 0 1rem;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
     position: relative;
+    z-index: 5;
   }
   .brand {
     font-weight: 700;
     font-size: 15px;
     letter-spacing: -0.01em;
     color: var(--text-strong);
+    text-decoration: none;
+  }
+  .brand:hover {
+    text-decoration: none;
+    color: var(--accent);
   }
   .brand::first-letter {
     color: var(--accent);
   }
-  .active-identity {
-    font-size: 13px;
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .identity-wrap, .overflow-wrap {
     position: relative;
   }
   .identity-button {
@@ -517,6 +572,7 @@
     align-items: center;
     gap: 0.35em;
     font-size: 12.5px;
+    min-height: 32px;
   }
   .identity-button .user {
     font-weight: 600;
@@ -533,17 +589,48 @@
     font-size: 10px;
     margin-left: 0.2em;
   }
-  .identity-menu {
+  .icon-button {
+    width: 36px;
+    min-height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 18px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .menu {
     position: absolute;
     top: calc(100% + 6px);
     right: 0;
     z-index: 10;
-    width: 320px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-md);
+    padding: 0.4rem;
+  }
+  .identity-menu {
+    width: 320px;
     padding: 0.5rem;
+  }
+  .overflow-menu {
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .overflow-item {
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 0.5em 0.7em;
+    border-radius: 6px;
+  }
+  .overflow-item:hover:not(:disabled) {
+    background: var(--accent-softer);
+    border-color: var(--accent);
   }
   .menu-empty {
     margin: 0;
@@ -606,74 +693,18 @@
   .small {
     font-size: 12px;
   }
-  .sidebar {
-    grid-area: sidebar;
-    display: flex;
-    flex-direction: column;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    padding: 0.75rem 0.55rem;
-    gap: 1px;
-  }
-  .sidebar a {
-    color: var(--text);
-    text-decoration: none;
-    padding: 0.55em 0.85rem;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    transition: background 0.12s ease, color 0.12s ease;
-  }
-  .sidebar a:hover {
-    background: var(--surface-alt);
-    text-decoration: none;
-  }
-  .sidebar a.active {
-    background: var(--accent-soft);
-    color: var(--accent-strong);
-    font-weight: 600;
-  }
-  /* First-run: nav links render dimmed and clicks are no-ops. */
-  .sidebar a.disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .sidebar a.disabled:hover {
-    background: transparent;
-    text-decoration: none;
-  }
   .content {
-    grid-area: content;
+    overflow: hidden;
+    min-height: 0;
+  }
+  /* Sub-routes (Settings, Identities, etc.) keep the legacy padded
+     layout. The chat shell at `/` paints edge-to-edge. */
+  .content.full {
     overflow: auto;
     padding: 1.5rem 1.75rem 2.25rem;
   }
-  /* Narrow viewport: collapse the sidebar into a horizontal strip. */
   @media (max-width: 700px) {
-    .app {
-      grid-template-columns: 1fr;
-      grid-template-rows: 52px auto 1fr;
-      grid-template-areas:
-        "topbar"
-        "sidebar"
-        "content";
-    }
-    .sidebar {
-      flex-direction: row;
-      overflow-x: auto;
-      padding: 0.4rem 0.6rem;
-      border-right: none;
-      border-bottom: 1px solid var(--border);
-      gap: 0.25rem;
-    }
-    .sidebar a {
-      white-space: nowrap;
-      padding: 0.45em 0.75rem;
-      font-size: 12.5px;
-    }
-    .content {
+    .content.full {
       padding: 1rem 1rem 1.5rem;
     }
   }
