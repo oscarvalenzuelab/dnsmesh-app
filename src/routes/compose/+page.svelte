@@ -7,10 +7,12 @@
 
   onMount(() => {
     const to = page.url.searchParams.get("to") ?? "";
-    const target = to
-      ? `/?contact=${encodeURIComponent(to.trim().toLowerCase())}`
-      : "/";
-    void goto(target, { replaceState: true });
+    const replyTo = page.url.searchParams.get("reply_to") ?? "";
+    const params = new URLSearchParams();
+    if (to) params.set("contact", to.trim().toLowerCase());
+    if (replyTo) params.set("reply_to", replyTo);
+    const query = params.toString();
+    void goto(query ? `/?${query}` : "/", { replaceState: true });
   });
 </script>
 

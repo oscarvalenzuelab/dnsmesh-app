@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import {
     activeIdentity,
     refreshActiveIdentity,
@@ -8,7 +7,6 @@
   import {
     DEFAULT_SENT_TTL_HOURS,
     getSentTtl,
-    hydrateSent,
     setSentTtl,
     type SentTtlHours,
   } from "$lib/stores/sent";
@@ -43,6 +41,9 @@
   // the proto; promote to a Rust-side setting alongside `sent.jsonl`.
   let sentTtl = $state<SentTtlHours>(DEFAULT_SENT_TTL_HOURS);
 
+  // `$effect` covers both initial mount and subsequent identity
+  // switches; the explicit `onMount(loadConfig)` was a duplicate that
+  // doubled the resolver/config calls on first paint.
   $effect(() => {
     void $activeIdentity;
     loadConfig();
@@ -55,12 +56,9 @@
     if (!$activeIdentity) return;
     const parsed = Number(value) as SentTtlHours;
     sentTtl = parsed;
+    // setSentTtl already sweeps and rehydrates; no need to do it twice.
     setSentTtl($activeIdentity.username, parsed);
-    // Sweep applies immediately; rehydrate so any expired rows drop now.
-    hydrateSent($activeIdentity.username);
   }
-
-  onMount(loadConfig);
 
   async function loadConfig() {
     if (!$activeIdentity) {

@@ -7,7 +7,6 @@
     inbox,
     inboxError,
     pollInbox,
-    hydrateInbox,
     markRead,
     deleteMessages,
   } from "$lib/stores/inbox";
@@ -135,18 +134,26 @@
   onMount(() => {
     syncNarrow();
     window.addEventListener("resize", syncNarrow);
-    void (async () => {
-      if ($activeIdentity) {
-        void refreshContacts();
-        await hydrateInbox();
-        void refreshAll();
-      }
-      // Honor ?contact=<username> deep link from Contacts / external nav.
-      const contactParam = page.url.searchParams.get("contact");
-      if (contactParam) {
-        void openConversation(contactParam.trim().toLowerCase());
-      }
-    })();
+    // Inbox/contacts/sent hydrate is owned by the layout — it runs on
+    // mount and on identity switch/lock from anywhere. Avoiding a
+    // duplicate hydrate here prevents a late `inbox_load` from
+    // clobbering a fresh `pollInbox` merge when both fire on startup.
+    const contactParam = page.url.searchParams.get("contact");
+    const replyToParam = page.url.searchParams.get("reply_to");
+    if (contactParam) {
+      void (async () => {
+        await openConversation(contactParam.trim().toLowerCase());
+        if (!replyToParam) return;
+        // Resolve the reply target once the conversation hydrates;
+        // the row may not be in the inbox yet on a cold-launch deep
+        // link, so wait one tick after activeConversation is set.
+        await tick();
+        const target = activeConversation?.messages.find(
+          (m) => m.msg_id_hex.toLowerCase() === replyToParam.toLowerCase(),
+        );
+        if (target) replyTo = target;
+      })();
+    }
     return () => {
       window.removeEventListener("resize", syncNarrow);
       if (activePollHandle !== null) {
@@ -155,10 +162,6 @@
       }
     };
   });
-
-  async function refreshAll() {
-    await pollInbox();
-  }
 
   // Look up a contact by the conversation key (which is the username).
   // Falls back to a case-insensitive match so deep-link params work.
@@ -213,16 +216,23 @@
     sendError = "";
     await tick();
     if (composerEl) composerEl.focus();
+    // Mark-read is handled by the $effect below so messages that
+    // arrive via polling while the thread is already open also flip
+    // to read without requiring a click.
+  }
 
-    // Mark all incoming messages in this conversation as read.
-    const conv = $conversations.find((c) => c.key === key);
+  // Auto-mark unread incoming messages as read whenever the active
+  // thread's message list changes — covers both the initial open and
+  // late-arriving messages from the 10s fast poll.
+  $effect(() => {
+    const conv = activeConversation;
     if (!conv) return;
     for (const m of conv.messages) {
       if (m.direction === "in" && !m.read) {
         void markRead(m.msg_id_hex);
       }
     }
-  }
+  });
 
   function closeConversation() {
     activeKey = null;
@@ -243,11 +253,25 @@
       sendError = "Message body must not be empty.";
       return;
     }
+    // Snapshot the identity *before* the await — if the user locks or
+    // switches mid-send, the row would otherwise land in whichever
+    // identity is active when the SDK reply arrives. We bind the row
+    // to the identity that authorised the send, regardless.
+    const identityAtSend = $activeIdentity?.username ?? null;
+    if (!identityAtSend) {
+      sendError = "No identity unlocked.";
+      return;
+    }
     sending = true;
     try {
       const result = await api.sendMessage(recipient, body);
-      if ($activeIdentity) {
-        appendSent($activeIdentity.username, {
+      // Only persist the sent row if that identity is still active. A
+      // mid-send switch means the row belongs to a different per-
+      // identity store and should be dropped (or, in a future revision,
+      // deferred until that identity is next unlocked).
+      const identityNow = $activeIdentity?.username ?? null;
+      if (identityNow === identityAtSend) {
+        appendSent(identityAtSend, {
           msg_id_hex: result.msg_id_hex,
           recipient_username: recipient,
           timestamp: Math.floor(Date.now() / 1000),
@@ -288,17 +312,42 @@
     replyTo = null;
   }
 
-  function openPicker() {
+  // Element refs + return-focus target for the picker modal.
+  let pickerSearchEl: HTMLInputElement | undefined = $state();
+  let pickerOpenerEl: HTMLElement | null = null;
+
+  function openPicker(e?: MouseEvent) {
+    if (e?.currentTarget instanceof HTMLElement) {
+      pickerOpenerEl = e.currentTarget;
+    }
     pickerOpen = true;
     pickerQuery = "";
     pickerFetchAddress = "";
     pickerError = "";
     void refreshContacts();
+    // Hand focus to the search input on next paint so screen readers
+    // announce the dialog and keyboard users land in the search field.
+    tick().then(() => pickerSearchEl?.focus());
   }
 
   function closePicker() {
     pickerOpen = false;
     pickerError = "";
+    // Restore focus to whatever opened the picker so keyboard users
+    // don't get dumped at the top of the document.
+    const opener = pickerOpenerEl;
+    pickerOpenerEl = null;
+    tick().then(() => opener?.focus());
+  }
+
+  // Escape handler attached to the dialog itself rather than the
+  // backdrop — the backdrop has tabindex=-1 and never receives
+  // keyboard focus, so the prior wiring was a no-op.
+  function onPickerKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      closePicker();
+    }
   }
 
   function pickContact(c: ContactView) {
@@ -603,11 +652,16 @@
     <div
       class="picker-backdrop"
       onclick={closePicker}
-      onkeydown={(e) => { if (e.key === "Escape") closePicker(); }}
-      role="button"
-      tabindex="-1"
+      aria-hidden="true"
     ></div>
-    <div class="picker" role="dialog" aria-modal="true" aria-label="New chat">
+    <div
+      class="picker"
+      role="dialog"
+      aria-modal="true"
+      aria-label="New chat"
+      tabindex="-1"
+      onkeydown={onPickerKeydown}
+    >
       <header class="picker-head">
         <h3>New chat</h3>
         <button type="button" class="icon-close" onclick={closePicker} aria-label="Close">×</button>
@@ -616,6 +670,7 @@
         <label class="search-label">
           <span>Search contacts</span>
           <input
+            bind:this={pickerSearchEl}
             type="text"
             bind:value={pickerQuery}
             placeholder="username or username@domain"
