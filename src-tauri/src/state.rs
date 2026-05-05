@@ -8,7 +8,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dnsmesh_client::DmpClient;
 use dnsmesh_net::{
     DnsRecordReader, DnsRecordWriter, DnsUpdateWriter, DnsUpdateWriterConfig, InMemoryDnsStore,
@@ -303,8 +303,8 @@ pub fn build_writer(publish: Option<&PublishConfig>) -> Result<(Arc<dyn DnsRecor
 /// Read a TSIG secret from disk. Accepts `base64:` / `hex:` prefixes
 /// or raw bytes — same shape the CLI consumes.
 fn read_tsig_secret(path: &Path) -> Result<Vec<u8>> {
-    use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
     let bytes = std::fs::read(path)
         .with_context(|| format!("reading TSIG secret at {}", path.display()))?;

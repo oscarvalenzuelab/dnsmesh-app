@@ -7,12 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use dnsmesh_client::addressing::{slot_domain, SLOT_COUNT};
 use dnsmesh_client::InboxMessage;
+use dnsmesh_client::addressing::{SLOT_COUNT, slot_domain};
 use dnsmesh_core::manifest::SlotManifest;
 
 use crate::error::{CommandError, CommandResult};
-use crate::state::{build_reader, AppState};
+use crate::state::{AppState, build_reader};
 
 /// Args for [`send_message`].
 #[derive(Debug, Clone, Deserialize)]

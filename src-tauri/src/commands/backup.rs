@@ -17,16 +17,16 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use tar::{Archive, Builder, Header};
 use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::{
-    sanitize_username, AppState, IdentityConfig, IdentityIndexEntry, IDENTITY_CONFIG_FILE,
+    AppState, IDENTITY_CONFIG_FILE, IdentityConfig, IdentityIndexEntry, sanitize_username,
 };
 
 /// Stable on-disk file names that survive an export → import round-trip.
@@ -507,7 +507,7 @@ fn ensure_safe_relative(rel: &str) -> Result<(), CommandError> {
                 return Err(CommandError::new(
                     "validation",
                     format!("archive path `{rel}` contains an unsafe component"),
-                ))
+                ));
             }
         }
     }

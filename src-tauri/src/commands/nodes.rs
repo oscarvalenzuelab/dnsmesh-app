@@ -655,8 +655,8 @@ pub async fn register_tsig(
                 .map_err(CommandError::from)?;
             match cfg.kdf_salt_base64 {
                 Some(b64) => {
-                    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
                     use base64::Engine as _;
+                    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
                     Some(BASE64_STANDARD.decode(&b64).map_err(|e| {
                         CommandError::new(
                             "internal",
@@ -720,8 +720,8 @@ pub async fn register_tsig(
         )
     })?;
     let secret_base64 = {
-        use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD as BASE64;
         BASE64.encode(&secret_bytes)
     };
 

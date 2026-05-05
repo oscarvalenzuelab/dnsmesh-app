@@ -26,14 +26,14 @@
 
 use std::path::PathBuf;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::{
-    sanitize_username, AppState, IdentityConfig, IdentityIndexEntry, PublishConfig,
+    AppState, IdentityConfig, IdentityIndexEntry, PublishConfig, sanitize_username,
 };
 
 /// On-disk shape of the CLI's `config.yaml`. Only the slice the

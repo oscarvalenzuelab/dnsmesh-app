@@ -1,8 +1,8 @@
 //! Identity commands: init/unlock, show, publish, refresh prekeys, plus
 //! the multi-identity list/switch surface.
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -11,8 +11,8 @@ use dnsmesh_client::{DmpClient, DmpClientConfig};
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::{
-    build_reader, build_writer, sanitize_username, ActiveClient, AppState, IdentityConfig,
-    IdentityIndexEntry, PublishConfig,
+    ActiveClient, AppState, IdentityConfig, IdentityIndexEntry, PublishConfig, build_reader,
+    build_writer, sanitize_username,
 };
 
 /// Length of the per-identity Argon2id salt we mint on first creation.
@@ -404,8 +404,8 @@ fn materialise_publish_block(
         (_, Some(b64)) => {
             // Validate the base64 before touching the filesystem so a
             // bad payload doesn't leave a half-written secret behind.
-            use base64::engine::general_purpose::STANDARD as BASE64;
             use base64::Engine as _;
+            use base64::engine::general_purpose::STANDARD as BASE64;
             BASE64.decode(b64).map_err(|e| {
                 CommandError::new(
                     "validation",

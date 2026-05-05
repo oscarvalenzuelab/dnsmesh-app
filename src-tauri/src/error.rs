@@ -7,7 +7,7 @@
 //! via `From` impls so commands can `?` SDK errors freely.
 
 use serde::Serialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 /// Error envelope returned by every Tauri command.
 #[derive(Debug, Clone, Serialize)]
