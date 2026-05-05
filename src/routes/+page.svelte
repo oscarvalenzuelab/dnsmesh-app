@@ -255,6 +255,17 @@
     }
   });
 
+  // Identity switch / lock from anywhere (header pill, /identities
+  // page) drops the transient per-thread menu state. Without this, a
+  // half-armed "Yes, clear" arming under identity A could carry into
+  // identity B and act on B's data if the new identity happens to
+  // share the same activeKey (same contact username).
+  $effect(() => {
+    void $activeIdentity;
+    threadMenuOpen = false;
+    confirmingClear = false;
+  });
+
   function closeConversation() {
     activeKey = null;
     replyTo = null;
