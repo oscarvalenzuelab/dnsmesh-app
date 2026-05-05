@@ -15,6 +15,41 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## 0.1.0-alpha.3 — 2026-05-05
+
+Android-becomes-functional release. The `.apk` shipped in alpha.2
+installed but crashed on launch and required out-of-band re-signing
+to install at all; with the fixes in this tag, sideloading and
+running on Android 14 actually works end-to-end.
+
+### Changed
+
+- **Android identities root** now resolves via Tauri's
+  `app_local_data_dir()` instead of `$HOME` (which Android sandboxes
+  don't expose). Desktop behavior unchanged. (#7)
+- **Android APK is now debug-signed by CI.** Generates the public
+  Android debug keystore on the fly, signs with `apksigner`, and
+  uploads only the signed asset. Sideload via `adb install` now works
+  out of the box. (#9)
+
+### Fixed
+
+- **Clear chat button.** The Tauri webview was silently returning
+  `false` from `window.confirm()`, so the click chain never reached
+  the actual clear path. Replaced with a two-click inline confirm
+  (`Clear chat` → `Yes, clear / Cancel`) that resets cleanly across
+  conversation switches and identity switches. (#6)
+- **Android crash at first launch.** Workaround for a wry < 0.55.x
+  ProGuard regression: R8 was stripping `WryActivity.getId()` (the
+  Kotlin auto-generated getter no Java/Kotlin code calls but tao's
+  JNI bridge does at `onActivityCreate`), causing `tao` to panic
+  with `JavaException: NoSuchMethodError`. The release-android
+  workflow now patches the keep rule, busts R8's incremental cache,
+  re-runs gradle, and verifies via `dexdump` that `getId()` actually
+  landed inside the WryActivity class block. The workaround
+  self-removes once wry > 0.55.x flows in transitively (upstream
+  fix: tauri-apps/wry#1721). (#8)
+
 ## 0.1.0-alpha.2 — 2026-05-04
 
 Pivot release: messenger-style chat UI, Android APK in the build
