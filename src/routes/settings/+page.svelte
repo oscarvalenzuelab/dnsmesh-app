@@ -6,6 +6,13 @@
   } from "$lib/stores/identity";
   import { clearInbox } from "$lib/stores/inbox";
   import {
+    DEFAULT_SENT_TTL_HOURS,
+    getSentTtl,
+    hydrateSent,
+    setSentTtl,
+    type SentTtlHours,
+  } from "$lib/stores/sent";
+  import {
     api,
     isCommandError,
     type IdentityConfigView,
@@ -32,10 +39,26 @@
   let tsigSecretPath = $state<string>("");
   let resolversText = $state<string>("");
 
+  // Sent-message retention TTL. Per-identity, localStorage-backed for
+  // the proto; promote to a Rust-side setting alongside `sent.jsonl`.
+  let sentTtl = $state<SentTtlHours>(DEFAULT_SENT_TTL_HOURS);
+
   $effect(() => {
     void $activeIdentity;
     loadConfig();
+    if ($activeIdentity) {
+      sentTtl = getSentTtl($activeIdentity.username);
+    }
   });
+
+  function onSentTtlChange(value: string) {
+    if (!$activeIdentity) return;
+    const parsed = Number(value) as SentTtlHours;
+    sentTtl = parsed;
+    setSentTtl($activeIdentity.username, parsed);
+    // Sweep applies immediately; rehydrate so any expired rows drop now.
+    hydrateSent($activeIdentity.username);
+  }
 
   onMount(loadConfig);
 
@@ -317,6 +340,25 @@
   {:else}
     {#if error}<p class="error">{error}</p>{/if}
     {#if info}<p class="pass">{info}</p>{/if}
+
+    <h2>Sent-message retention</h2>
+    <p class="muted small">
+      Sent messages are kept locally so chat threads show both sides. Older
+      sends are auto-deleted after this period (24h max).
+    </p>
+    <label>
+      <span>Auto-delete sent messages after</span>
+      <select
+        value={String(sentTtl)}
+        onchange={(e) =>
+          onSentTtlChange((e.currentTarget as HTMLSelectElement).value)}
+      >
+        <option value="1">1 hour</option>
+        <option value="6">6 hours</option>
+        <option value="12">12 hours</option>
+        <option value="24">24 hours</option>
+      </select>
+    </label>
 
     <h2>Publish destination (TSIG-signed UPDATE)</h2>
     <p class="muted small">
