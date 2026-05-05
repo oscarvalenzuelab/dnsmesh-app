@@ -482,10 +482,10 @@ pub async fn update_publish_config(
     // can't swap them at runtime, so drop it and let the UI re-prompt
     // for the passphrase before the next unlock.
     let mut guard = state.active.write().await;
-    if let Some(active) = guard.as_ref() {
-        if active.username == username {
-            *guard = None;
-        }
+    if let Some(active) = guard.as_ref()
+        && active.username == username
+    {
+        *guard = None;
     }
     drop(guard);
 
