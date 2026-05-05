@@ -24,32 +24,39 @@ fn version() -> String {
 
 /// Build the Tauri runtime.
 ///
-/// Identities-root resolution order mirrors the CLI:
-/// `$DMP_DESKTOP_HOME` > `$DMP_CONFIG_HOME/identities` >
-/// `$HOME/.dmp/identities`.
+/// Identities-root resolution differs by platform:
+///   - Desktop: `$DMP_DESKTOP_HOME` > `$DMP_CONFIG_HOME/identities` >
+///     `$HOME/.dmp/identities` (mirrors the CLI).
+///   - Mobile (Android / iOS): the per-app local-data directory the OS
+///     hands us via `app.path().app_local_data_dir()`. Mobile sandboxes
+///     don't expose `$HOME` so the env-driven resolution can't run, and
+///     identities have to live inside the app's private storage.
+///
+/// The mobile branch needs the `App` handle, so root resolution is
+/// deferred into the `setup()` callback rather than computed before the
+/// builder runs.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_tracing();
 
-    let root = match AppState::default_root() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("dnsmesh-desktop: cannot resolve identities root: {e:#}");
-            std::process::exit(2);
-        }
-    };
-    if let Err(e) = std::fs::create_dir_all(&root) {
-        eprintln!(
-            "dnsmesh-desktop: cannot create identities root {}: {e}",
-            root.display()
-        );
-        std::process::exit(2);
-    }
-    let app_state = AppState::new(root);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(app_state)
+        .setup(|app| {
+            use tauri::Manager;
+            let root = if cfg!(any(target_os = "android", target_os = "ios")) {
+                app.path()
+                    .app_local_data_dir()
+                    .map_err(|e| format!("app_local_data_dir unavailable: {e}"))?
+                    .join("identities")
+            } else {
+                AppState::default_root()
+                    .map_err(|e| format!("cannot resolve identities root: {e:#}"))?
+            };
+            std::fs::create_dir_all(&root)
+                .map_err(|e| format!("cannot create identities root {}: {e}", root.display()))?;
+            app.manage(AppState::new(root));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             version,
             // identity
