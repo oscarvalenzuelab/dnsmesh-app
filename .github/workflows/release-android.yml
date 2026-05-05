@@ -52,10 +52,6 @@ jobs:
   build:
     name: build (universal APK)
     runs-on: ubuntu-22.04
-    env:
-      # NDK r26d. Pinned so the build is reproducible across runs;
-      # bump deliberately when Tauri or rustc require a newer NDK.
-      ANDROID_NDK_VERSION: "26.3.11579264"
     steps:
       - name: Checkout at tag
         uses: actions/checkout@v4
@@ -95,15 +91,21 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
+      - name: Set up Android NDK
+        # `nttld/setup-ndk` handles licence acceptance + path export
+        # cleanly. Pinned so the build is reproducible across runs;
+        # bump deliberately when Tauri or rustc require a newer NDK.
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Export NDK paths
         shell: bash
         run: |
-          set -euo pipefail
-          # The setup-android action installs the SDK manager but not
-          # the NDK; we install a pinned version explicitly.
-          yes | sdkmanager --install "ndk;${ANDROID_NDK_VERSION}" >/dev/null
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -137,13 +139,9 @@ jobs:
         # build. Deterministic for the proto. Once we need custom
         # AndroidManifest entries / icons / signing config, commit
         # `gen/android/` and remove this step.
-        env:
-          NDK_HOME: ${{ env.NDK_HOME }}
         run: cargo tauri android init
 
       - name: Build APK (release, all ABIs)
-        env:
-          NDK_HOME: ${{ env.NDK_HOME }}
         run: cargo tauri android build --apk
 
       - name: Locate built APKs
