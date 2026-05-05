@@ -144,6 +144,131 @@ jobs:
       - name: Build APK (release, all ABIs)
         run: cargo tauri android build --apk
 
+      - name: Apply wry getId() ProGuard workaround (issue #8)
+        # `wry <= 0.55.0`'s `proguard-wry.pro` template is missing
+        # `int getId();` for `WryActivity`. R8 strips the Kotlin auto-
+        # generated getter, then tao 0.35's JNI bridge calls
+        # `activity.getId()` at onActivityCreate, gets NoSuchMethodError,
+        # panics, and the app crashes before its first frame.
+        #
+        # Upstream fix: tauri-apps/wry#1721 (merged 2026-05-04, awaiting
+        # release). Until that flows in transitively, patch the rule
+        # post-init and force R8 to re-run. Two complications:
+        #
+        #   1. `cargo tauri android init` (run by `cargo tauri android
+        #      build`) regenerates the file from wry's bundled template
+        #      every time, so the patch only sticks between init and the
+        #      next R8 invocation.
+        #   2. Gradle's R8 task does not declare the proguard file as an
+        #      input, so editing it in place doesn't invalidate R8's
+        #      incremental cache. We have to wipe R8 outputs to force a
+        #      re-run.
+        #
+        # Sequence: patch → wipe R8 + dex outputs → re-run gradle
+        # `assembleUniversalRelease`, excluding rust tasks since the
+        # `.so`s are already on disk from the previous build step.
+        # Once the next wry release lands, delete this whole step.
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # `-print -quit` avoids the SIGPIPE-on-`find | head` risk
+          # under pipefail. Guard the search root so a missing tree
+          # surfaces a clear error rather than an opaque empty result.
+          if [ ! -d src-tauri/gen/android ]; then
+            echo "::error::src-tauri/gen/android missing — Tauri Android init did not run"
+            exit 1
+          fi
+          PROGUARD=$(find src-tauri/gen/android -name "proguard-wry.pro" -path "*/generated/*" -print -quit)
+          if [ -z "$PROGUARD" ]; then
+            echo "::error::proguard-wry.pro not found under src-tauri/gen/android — Tauri's Android scaffolding may have changed"
+            exit 1
+          fi
+          echo "Patching $PROGUARD"
+
+          if grep -q "int getId();" "$PROGUARD"; then
+            echo "::notice::proguard-wry.pro already has 'int getId();' — wry release likely shipped the upstream fix; this workflow step can be removed"
+          else
+            python3 - "$PROGUARD" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path(sys.argv[1])
+          s = p.read_text()
+          # Match the WryActivity keep block for any package and insert
+          # `int getId();` between `getAppClass(...)` and `getVersion()`,
+          # mirroring the position in tauri-apps/wry#1721.
+          new, n = re.subn(
+              r'(-keep class \S+\.WryActivity \{[^}]*?\n)(\s+java\.lang\.String getVersion\(\);)',
+              r'\1  int getId();\n\2',
+              s,
+              count=1,
+              flags=re.DOTALL,
+          )
+          if n != 1:
+              sys.stderr.write("could not locate WryActivity keep block in proguard-wry.pro — wry template shape may have changed\n")
+              sys.exit(1)
+          p.write_text(new)
+          PY
+            grep -q "int getId();" "$PROGUARD" || { echo "::error::patch did not apply"; exit 1; }
+            echo "Patch applied."
+          fi
+
+          # Wipe R8 outputs so the next gradle run actually re-runs R8
+          # (Gradle's incremental check misses our edit).
+          rm -rf src-tauri/gen/android/app/build/outputs/apk
+          rm -rf src-tauri/gen/android/app/build/outputs/mapping
+          rm -rf src-tauri/gen/android/app/build/intermediates/dex
+          rm -rf src-tauri/gen/android/app/build/intermediates/r8_dex_archive_for_full_bundle
+
+          # Re-run gradle assemble, skipping the rust-build tasks (the
+          # `.so` files are already in jniLibs from the prior build).
+          # Skipping is required because those tasks invoke `cargo tauri`
+          # standalone, which fails outside of the Tauri parent process
+          # (it tries to connect to a WebSocket the parent owns).
+          (
+            cd src-tauri/gen/android
+            ./gradlew :app:assembleUniversalRelease \
+              -x :app:rustBuildArm64Release \
+              -x :app:rustBuildArmRelease \
+              -x :app:rustBuildX86_64Release \
+              -x :app:rustBuildX86Release \
+              --no-daemon --console=plain
+          )
+
+          # Sanity-check: confirm getId() landed inside the WryActivity
+          # class in the dex. This is the workaround's load-bearing
+          # invariant — anything that prevents the check itself from
+          # running is treated as a hard failure, not a silent skip.
+          DEXDUMP=$(find "$ANDROID_HOME/build-tools" -name dexdump -type f -print -quit 2>/dev/null || true)
+          if [ -z "$DEXDUMP" ] || [ ! -x "$DEXDUMP" ]; then
+            echo "::error::dexdump not found in $ANDROID_HOME/build-tools — cannot verify the workaround"
+            exit 1
+          fi
+          shopt -s nullglob
+          apks=(src-tauri/gen/android/app/build/outputs/apk/universal/release/*-unsigned.apk)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "::error::no universal-release APK produced after re-running gradle"
+            exit 1
+          fi
+          UNIVERSAL="${apks[0]}"
+          # Scope the grep to the WryActivity class block so we don't get
+          # a false-positive from any other class that defines getId.
+          # dexdump emits class descriptor lines with leading spaces
+          # ("  Class descriptor  : ..."), so anchor the block-end
+          # match with [[:space:]]*. Without that, in_block stays
+          # true past WryActivity and a later RustWebView.getId would
+          # satisfy the check even if WryActivity.getId was stripped.
+          if LC_ALL=C "$DEXDUMP" "$UNIVERSAL" 2>/dev/null | LC_ALL=C awk '
+              /Class descriptor.*WryActivity;/         { in_block=1; next }
+              in_block && /^[[:space:]]*Class descriptor/ { in_block=0 }
+              in_block && /name *: .getId./            { found=1 }
+              END { exit !found }
+            '; then
+            echo "✓ WryActivity.getId() present in dex"
+          else
+            echo "::error::workaround failed — WryActivity.getId() still missing from dex"
+            exit 1
+          fi
+
       - name: Sign APKs with Android debug keystore
         # `cargo tauri android build --apk` produces unsigned release
         # APKs, which Android refuses to install
