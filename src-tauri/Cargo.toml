@@ -1,9 +1,9 @@
 [package]
 name = "dnsmesh-desktop"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 description = "Tauri desktop client for the DNS Mesh Protocol"
 authors = ["Oscar Valenzuela"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
