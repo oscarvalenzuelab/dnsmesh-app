@@ -1,6 +1,6 @@
 [package]
 name = "dnsmesh-app"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 description = "Tauri client (desktop + Android) for the DNS Mesh Protocol"
 authors = ["Oscar Valenzuela"]
 edition = "2024"

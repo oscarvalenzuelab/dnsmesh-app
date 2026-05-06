@@ -15,6 +15,29 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## 0.1.0-alpha.6 — 2026-05-06
+
+Network resilience release. Fixes the Android-after-VPN-disconnect lockup
+and adds a manual recovery button.
+
+### Fixed
+
+- **Resolver pool no longer wedges after a network change.** Hickory's
+  UDP sockets stay bound to whichever interface was active at
+  construction time; on Android, dropping a VPN left them pointing at
+  a dead tunnel and queries silently failed until the user locked +
+  unlocked the identity. The unlocked client now sits behind a
+  `RefreshableReader` whose inner pool can be swapped at runtime
+  without rebuilding the SDK client. (#15)
+
+### Added
+
+- **Settings → Refresh network** button. Rebuilds the resolver pool's
+  UDP sockets to recover from VPN drops or other network changes.
+- Inbox poll auto-fires the refresh after two consecutive failures. If
+  failures keep happening past the auto-refresh, a banner on the chat
+  list points at Settings.
+
 ## 0.1.0-alpha.5 — 2026-05-06
 
 First release under the new `dnsmesh-app` name.
