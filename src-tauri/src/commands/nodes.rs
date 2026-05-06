@@ -16,7 +16,7 @@ use dnsmesh_net::resolver_pool::WELL_KNOWN_RESOLVERS;
 use dnsmesh_net::{DnsRecordReader, ResolverPool, ResolverPoolConfig};
 
 use crate::error::{CommandError, CommandResult};
-use crate::state::AppState;
+use crate::state::{AppState, build_reader};
 
 /// Owner of the per-zone heartbeat RRset:
 /// `_dnsmesh-heartbeat.<zone>`. Mirrors `dmp/core/heartbeat.py`.
@@ -91,6 +91,56 @@ pub async fn effective_resolvers(state: State<'_, AppState>) -> CommandResult<Ef
             .collect(),
         source: "well_known".to_string(),
     })
+}
+
+/// Result of [`refresh_network`]: the resolver pool that's now in
+/// effect after the swap.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshNetworkResult {
+    pub addresses: Vec<String>,
+    pub source: String,
+}
+
+/// Rebuild the active identity's resolver pool and atomically swap it
+/// in. Used to recover from stale UDP sockets after a network change
+/// (typically a VPN disconnect on Android).
+///
+/// Returns the resolver list that's now in effect. No-op against a
+/// locked / missing identity returns a "not_initialized" error so the
+/// UI can prompt for unlock.
+#[tauri::command]
+pub async fn refresh_network(state: State<'_, AppState>) -> CommandResult<RefreshNetworkResult> {
+    let guard = state.active.read().await;
+    let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
+    let cfg = state
+        .load_identity_config(&active.username)
+        .map_err(CommandError::from)?;
+
+    let resolvers_for_log = cfg.resolvers.clone();
+    let new_inner = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
+    active.refreshable_reader.replace(new_inner);
+
+    let trimmed: Vec<String> = resolvers_for_log
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let (addresses, source) = if trimmed.is_empty() {
+        (
+            WELL_KNOWN_RESOLVERS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            "well_known".to_string(),
+        )
+    } else {
+        (trimmed, "override".to_string())
+    };
+    Ok(RefreshNetworkResult { addresses, source })
 }
 
 /// Severity of a doctor check.

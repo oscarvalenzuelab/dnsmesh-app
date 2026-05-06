@@ -166,6 +166,7 @@ export const api = {
     invoke("register_tsig", args as unknown as Record<string, unknown>),
   effectiveResolvers: (): Promise<EffectiveResolvers> =>
     invoke("effective_resolvers"),
+  refreshNetwork: (): Promise<EffectiveResolvers> => invoke("refresh_network"),
 
   // inbox (per-identity persistent store)
   inboxLoad: (): Promise<InboxRow[]> => invoke("inbox_load"),

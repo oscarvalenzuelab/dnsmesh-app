@@ -28,6 +28,12 @@
   // without grepping the YAML on disk.
   let effectiveResolvers = $state<EffectiveResolvers | null>(null);
 
+  // Manual "Refresh network" recovery state. Rebuilds the resolver pool's
+  // UDP sockets to recover from VPN disconnects and other network changes
+  // that leave hickory bound to a now-dead interface.
+  let refreshingNetwork = $state<boolean>(false);
+  let refreshNetworkMessage = $state<string>("");
+
   // Form bindings
   let publishEnabled = $state<boolean>(false);
   let zone = $state<string>("");
@@ -79,6 +85,20 @@
     } catch (err) {
       console.warn("effective_resolvers failed", err);
       effectiveResolvers = null;
+    }
+  }
+
+  async function refreshNetwork() {
+    if (!$activeIdentity || refreshingNetwork) return;
+    refreshingNetwork = true;
+    refreshNetworkMessage = "";
+    try {
+      effectiveResolvers = await api.refreshNetwork();
+      refreshNetworkMessage = "Resolver pool rebuilt.";
+    } catch (err) {
+      refreshNetworkMessage = isCommandError(err) ? err.message : String(err);
+    } finally {
+      refreshingNetwork = false;
     }
   }
 
@@ -512,6 +532,23 @@
           </span>
         </p>
       {/if}
+      <div class="refresh-row">
+        <button
+          type="button"
+          class="secondary"
+          onclick={refreshNetwork}
+          disabled={refreshingNetwork}
+        >
+          {refreshingNetwork ? "Refreshing…" : "Refresh network"}
+        </button>
+        <span class="muted small">
+          Rebuilds the resolver pool. Try this after switching networks or
+          dropping a VPN.
+        </span>
+      </div>
+      {#if refreshNetworkMessage}
+        <p class="muted small">{refreshNetworkMessage}</p>
+      {/if}
       <p class="muted small">
         Optional. One IP literal per line. Leave blank to use the well-known
         public resolvers.
@@ -697,6 +734,13 @@
   .effective-line {
     margin-top: 0;
     margin-bottom: 0.4em;
+  }
+  .refresh-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6em;
+    margin: 0.4em 0 0.6em;
   }
   .backup-warning {
     padding: 0.6rem 0.75rem;

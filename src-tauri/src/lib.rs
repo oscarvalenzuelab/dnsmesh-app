@@ -93,6 +93,7 @@ pub fn run() {
             commands::nodes::discover_nodes,
             commands::nodes::register_tsig,
             commands::nodes::effective_resolvers,
+            commands::nodes::refresh_network,
             // import / backup
             commands::import_cli::import_from_cli,
             commands::backup::export_identity_backup,

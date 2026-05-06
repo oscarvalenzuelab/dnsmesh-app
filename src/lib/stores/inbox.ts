@@ -9,6 +9,24 @@ import { activeIdentity } from "$lib/stores/identity";
 export const inbox = writable<InboxRow[]>([]);
 export const inboxError = writable<string | null>(null);
 
+// Set to `true` when consecutive `pollInbox` failures keep happening
+// even after an automatic resolver-pool rebuild. The UI surfaces this
+// as a "network may be stale" banner pointing at Settings → Refresh
+// network. Cleared on the next successful poll.
+export const inboxStaleNetwork = writable<boolean>(false);
+
+// Number of consecutive `pollInbox` failures since the last success.
+// Drives the auto-refresh trigger below.
+let consecutiveFailures = 0;
+// Have we already fired an automatic `refresh_network` for the current
+// failure run? Prevents firing it on every tick after the threshold.
+let autoRefreshFired = false;
+// Guards against overlapping refresh calls if a poll fails while the
+// previous auto-refresh is still in flight.
+let autoRefreshInFlight = false;
+
+const AUTO_REFRESH_FAILURE_THRESHOLD = 2;
+
 // Replace the in-memory store from disk. Failures surface via
 // `inboxError`; we never throw, so other pages keep working.
 export async function hydrateInbox(): Promise<void> {
@@ -35,9 +53,6 @@ export async function pollInbox(): Promise<number> {
   inboxError.set(null);
   try {
     const fresh = await api.receiveMessages();
-    // Identity changed mid-poll — drop the result on the floor; a poll
-    // for the new identity is already (or will shortly be) in flight
-    // from the layout's effect.
     if (get(activeIdentity)?.username !== identityAtStart) return 0;
     let added = 0;
     if (fresh.length > 0) {
@@ -56,11 +71,51 @@ export async function pollInbox(): Promise<number> {
       }
       return merged;
     });
+    onPollSuccess();
     return added;
   } catch (err) {
     if (get(activeIdentity)?.username !== identityAtStart) return 0;
     inboxError.set(formatError(err));
+    onPollFailure();
     return 0;
+  }
+}
+
+// One `pollInbox` succeeded. Clear the failure counter and any "stale
+// network" banner — whatever the resolver pool's state was, it works
+// now.
+function onPollSuccess(): void {
+  consecutiveFailures = 0;
+  autoRefreshFired = false;
+  inboxStaleNetwork.set(false);
+}
+
+// One `pollInbox` failed. Increment the counter and, on the second
+// consecutive failure, automatically rebuild the resolver pool. If
+// failures keep happening after the auto-refresh, surface the banner.
+function onPollFailure(): void {
+  consecutiveFailures += 1;
+  if (consecutiveFailures < AUTO_REFRESH_FAILURE_THRESHOLD) return;
+  if (!autoRefreshFired) {
+    autoRefreshFired = true;
+    void triggerAutoRefresh();
+  } else {
+    inboxStaleNetwork.set(true);
+  }
+}
+
+async function triggerAutoRefresh(): Promise<void> {
+  if (autoRefreshInFlight) return;
+  if (get(activeIdentity) === null) return;
+  autoRefreshInFlight = true;
+  try {
+    await api.refreshNetwork();
+  } catch (err) {
+    // Refresh-network failures aren't surfaced inline; the banner that
+    // fires on the *next* failed poll is the user-visible signal.
+    console.warn("auto refresh_network failed", err);
+  } finally {
+    autoRefreshInFlight = false;
   }
 }
 
@@ -101,6 +156,9 @@ export async function deleteMessages(msgIdHexes: string[]): Promise<boolean> {
 export function clearInbox(): void {
   inbox.set([]);
   inboxError.set(null);
+  consecutiveFailures = 0;
+  autoRefreshFired = false;
+  inboxStaleNetwork.set(false);
 }
 
 function toPersisted(m: InboxMessageView) {

@@ -6,6 +6,7 @@
   import {
     inbox,
     inboxError,
+    inboxStaleNetwork,
     pollInbox,
     markRead,
     deleteMessages,
@@ -492,6 +493,12 @@
         </div>
         {#if $inboxError}
           <p class="error small inline-msg">{$inboxError}</p>
+        {/if}
+        {#if $inboxStaleNetwork}
+          <p class="warn small inline-msg">
+            Network may be stale. Try <a href="/settings">Refresh network</a> in
+            Settings.
+          </p>
         {/if}
         {#if $conversations.length === 0}
           <div class="empty-list">
