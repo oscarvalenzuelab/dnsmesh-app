@@ -292,7 +292,7 @@
           aria-label="Open menu"
           title="Menu"
         >
-          ⋯
+          ☰
         </button>
         {#if overflowOpen}
           <div class="menu overflow-menu" role="menu">
@@ -527,7 +527,11 @@
 
   .app {
     display: grid;
-    grid-template-rows: 52px 1fr;
+    /* The topbar is `auto` so it can grow by the status-bar inset on
+       devices with edge-to-edge windows (Android, iOS notch). On
+       desktop, env(safe-area-inset-top) resolves to 0 and the row
+       collapses to its content height, which matches the prior 52px. */
+    grid-template-rows: auto 1fr;
     height: 100vh;
     background: var(--bg);
   }
@@ -535,7 +539,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 1rem;
+    /* Reserve space for the system status bar on top, plus side
+       insets for cutouts / rounded corners on phones. Desktop
+       falls back to 0. */
+    padding:
+      max(env(safe-area-inset-top), 0px)
+      max(1rem, env(safe-area-inset-right))
+      0
+      max(1rem, env(safe-area-inset-left));
+    /* The grid row is now content-sized, so reserve a min-height
+       so the bar doesn't squash when no inset is reported. */
+    min-height: 52px;
+    box-sizing: content-box;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
     position: relative;
@@ -567,12 +582,12 @@
     background: var(--surface-alt);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 0.35em 0.85em;
+    padding: 0.4em 0.95em;
     display: inline-flex;
     align-items: center;
     gap: 0.35em;
     font-size: 12.5px;
-    min-height: 32px;
+    min-height: 36px;
   }
   .identity-button .user {
     font-weight: 600;
@@ -590,11 +605,11 @@
     margin-left: 0.2em;
   }
   .icon-button {
-    width: 36px;
-    min-height: 36px;
+    width: 40px;
+    min-height: 40px;
     padding: 0;
     border-radius: 50%;
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
@@ -625,8 +640,9 @@
     text-align: left;
     background: transparent;
     border: 1px solid transparent;
-    padding: 0.5em 0.7em;
+    padding: 0.6em 0.8em;
     border-radius: 6px;
+    min-height: 44px;
   }
   .overflow-item:hover:not(:disabled) {
     background: var(--accent-softer);
