@@ -15,6 +15,26 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## 0.1.0-alpha.4 — 2026-05-06
+
+Android UX polish.
+
+### Changed
+
+- Android header now sits below the system status bar instead of
+  being painted over by the clock and notification icons. CSS uses
+  `env(safe-area-inset-*)`; desktop is unchanged.
+- Header tap targets bumped to 40px so the menu button is reachable
+  on phones.
+- Global-nav glyph swapped from `⋯` to `☰`. Hamburger is the
+  recognized affordance for primary navigation; the per-thread
+  `⋯` (Clear chat) stays as kebab since it is contextual.
+- The committed Android icons in `src-tauri/icons/android/` now
+  ship with the APK. Tauri's mobile init was generating a
+  placeholder icon set that the release was using instead.
+- Em-dash sweep across the chat shell, About, Contacts, Settings,
+  and Identities pages.
+
 ## 0.1.0-alpha.3 — 2026-05-05
 
 Android-becomes-functional release. The `.apk` shipped in alpha.2

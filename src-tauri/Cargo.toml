@@ -1,6 +1,6 @@
 [package]
 name = "dnsmesh-desktop"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 description = "Tauri desktop client for the DNS Mesh Protocol"
 authors = ["Oscar Valenzuela"]
 edition = "2024"

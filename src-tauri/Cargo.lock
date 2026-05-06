@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-desktop"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "anyhow",
  "async-trait",
