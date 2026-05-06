@@ -5,12 +5,12 @@ state. The desktop client embeds the in-progress
 [`dnsmesh-rs`](https://github.com/oscarvalenzuelab/dnsmesh-rs) SDK,
 whose crate boundaries, wire-format compatibility, and on-disk schema
 are still moving. **Don't route confidentiality-critical traffic
-through `dnsmesh-desktop` until both the wire-format external
+through `dnsmesh-app` until both the wire-format external
 cryptographic audit lands (against the Python reference at
 [oscarvalenzuelab/DNSMeshProtocol](https://github.com/oscarvalenzuelab/DNSMeshProtocol))
 *and* this desktop client has cut a tagged 0.1.0 release.**
 
-`dnsmesh-desktop` is a Tauri 2 desktop client wrapping the `dnsmesh-rs`
+`dnsmesh-app` is a Tauri 2 client (desktop + Android) wrapping the `dnsmesh-rs`
 SDK. The protocol specification, the authoritative DNS node
 implementation, and the federation / cluster code live in the Python
 reference repo above. This client consumes the same wire format the
@@ -24,8 +24,8 @@ desktop client.
 Crypto bugs, plaintext-leak bugs, key-handling bugs, and anything else
 that could undermine the trust model go to
 `oscar.valenzuela.b_AT_gmail.com` (replace `_AT_` with `@`) **privately**
-— not to a public GitHub issue. Once this repository is flipped public,
-[GitHub's private vulnerability reporting](https://github.com/oscarvalenzuelab/dnsmesh-desktop/security/advisories/new)
+(not to a public GitHub issue). Once this repository is flipped public,
+[GitHub's private vulnerability reporting](https://github.com/oscarvalenzuelab/dnsmesh-app/security/advisories/new)
 becomes the preferred channel.
 
 Include in the report:
@@ -45,7 +45,7 @@ open a public issue for an unpatched security bug.
 
 ## Scope of this repository
 
-`dnsmesh-desktop` ships:
+`dnsmesh-app` ships:
 
 - A **Tauri 2 desktop application** (SvelteKit frontend + Rust host)
   that wraps the `dnsmesh-rs` SDK.
@@ -58,17 +58,17 @@ open a public issue for an unpatched security bug.
 
 It does **not** ship:
 
-- The SDK itself — that's [`dnsmesh-rs`](https://github.com/oscarvalenzuelab/dnsmesh-rs);
+- The SDK itself, [`dnsmesh-rs`](https://github.com/oscarvalenzuelab/dnsmesh-rs);
   vulnerabilities in crypto primitives, wire format, or DNS publishing
   belong there.
 - The authoritative DNS node, the publish API, federation code, or
-  the operator deploy scripts — those live in the
+  the operator deploy scripts (those live in the
   [Python reference](https://github.com/oscarvalenzuelab/DNSMeshProtocol).
 - Mobile builds.
 
-Threat-model questions about the **protocol** — chunking, manifests,
+Threat-model questions about the **protocol** (chunking, manifests,
 slot semantics, replay defenses, traffic analysis, zone-anchored
-identity — are answered in the
+identity) are answered in the
 [Python repo's SECURITY.md](https://github.com/oscarvalenzuelab/DNSMeshProtocol/blob/main/SECURITY.md).
 Vulnerabilities in the embedded crypto stack go to the
 [`dnsmesh-rs` SECURITY.md](https://github.com/oscarvalenzuelab/dnsmesh-rs/blob/main/SECURITY.md).
@@ -94,7 +94,7 @@ losing the passphrase means losing the identity.
 The desktop client never persists the passphrase. It lives only in
 process memory while an identity is unlocked, and is wiped on **Lock
 active** in the header dropdown. **Loss of the passphrase is loss of
-the identity** — there is no recovery, by design. Persist it in a
+the identity**. There is no recovery, by design. Persist it in a
 password manager.
 
 ## Known limits (port-specific)
@@ -108,7 +108,7 @@ limits see the Python reference.
    unsigned. macOS users have to right-click → Open the first time;
    Windows users have to click through SmartScreen. The signing
    pipeline is wired in `release.yml` but gated on signing-secret
-   presence — flipping the secrets on at any time turns signing on
+   presence; flipping the secrets on at any time turns signing on
    without a code change. Until then, **verify the SHA-256 of the
    downloaded asset against the value on the Release page** before
    first launch.
@@ -128,7 +128,7 @@ limits see the Python reference.
    machine, set `chmod 0700 ~/.dmp` after creating the first identity.
    There is no OS keychain integration yet.
 6. **Local IPC trust boundary.** The Tauri host trusts any process
-   that can reach the IPC channel — which on a single-user desktop
+   that can reach the IPC channel, which on a single-user desktop
    means any process running as the same OS user. Treat the
    passphrase prompt the same way you treat a sudo prompt.
 7. **DNS resolver auto-detect.** When no resolver override is set
@@ -139,9 +139,9 @@ limits see the Python reference.
 
 ## Out-of-scope for this repository
 
-- Cryptographic primitives, wire format, and SDK behaviour — see the
+- Cryptographic primitives, wire format, and SDK behaviour: see the
   [`dnsmesh-rs` SECURITY.md](https://github.com/oscarvalenzuelab/dnsmesh-rs/blob/main/SECURITY.md).
-- Server-side hardening of DMP nodes — see the
+- Server-side hardening of DMP nodes: see the
   [Python reference](https://github.com/oscarvalenzuelab/DNSMeshProtocol).
-- Wire format and protocol-level threat model — see the Python
+- Wire format and protocol-level threat model: see the Python
   reference's `docs/protocol/` and `SECURITY.md`.
