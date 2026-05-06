@@ -213,7 +213,7 @@
             placeholder="bob@mesh.example.com"
           />
           <small class="hint muted">
-            Usernames are case-insensitive — your input will be normalized to lowercase.
+            Usernames are case-insensitive; your input will be normalized to lowercase.
           </small>
         </label>
         <div class="actions">
@@ -269,7 +269,7 @@
           <span>Username</span>
           <input type="text" bind:value={manualUsername} />
           <small class="hint muted">
-            Case-insensitive — will be normalized to lowercase.
+            Case-insensitive; will be normalized to lowercase.
           </small>
         </label>
         <label>

@@ -208,7 +208,7 @@
       // `save()` can forward it to the host as `tsig_secret_base64`.
       pendingSecretBase64 = result.secret_base64;
       tsigSecretPath = "(will be written to <identity>/tsig.key on Save)";
-      registerSuccess = `REGISTERED with ${topDiscovered.endpoint} — TSIG key ${result.key_name} ready. Click Save to materialise.`;
+      registerSuccess = `REGISTERED with ${topDiscovered.endpoint}. TSIG key ${result.key_name} ready. Click Save to materialise.`;
       registerPassphrase = "";
       showRegisterForm = false;
     } catch (err) {
@@ -316,7 +316,7 @@
       clearInbox();
       await refreshActiveIdentity();
       info =
-        "Publish settings saved — please unlock again to apply.";
+        "Publish settings saved. Please unlock again to apply.";
     } catch (err) {
       error = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -361,7 +361,7 @@
     <h2>Publish destination (TSIG-signed UPDATE)</h2>
     <p class="muted small">
       Required for publishing your identity, refreshing prekeys, and
-      sending. Leaving it disabled keeps the client read-only — useful for
+      sending. Leaving it disabled keeps the client read-only, useful for
       a fresh install before the operator wires up authority.
     </p>
 
@@ -402,7 +402,7 @@
             Register with {topDiscovered.endpoint}
           </button>
           <p class="muted small">
-            Provisions a TSIG key on this node in one click — the node
+            Provisions a TSIG key on this node in one click. The node
             issues a fresh key tied to your identity. Replaces the
             manual key-name + secret-path fields below.
           </p>
@@ -410,7 +410,7 @@
           <p class="muted small">
             Enter your passphrase so we can sign the operator's
             challenge. The passphrase is sent to the local Tauri
-            process only — it is not transmitted to the node.
+            process only; it is not transmitted to the node.
           </p>
           <label>
             <span>Passphrase</span>
@@ -477,8 +477,8 @@
         <details class="advanced-disclosure">
           <summary>Advanced (manual configuration)</summary>
           <p class="muted small">
-            Only edit these if you minted the TSIG key out-of-band — for
-            example, you have shell access on the operator's DNS server.
+            Only edit these if you minted the TSIG key out-of-band, for
+            example if you have shell access on the operator's DNS server.
             The Register flow above sets both fields automatically.
           </p>
           <label>
@@ -568,7 +568,7 @@
         />
         <small class="muted">
           The host auto-appends <code>.dmp-backup.tar.gz</code> if you
-          omit it. Tildes (<code>~</code>) are NOT expanded — supply an
+          omit it. Tildes (<code>~</code>) are NOT expanded; supply an
           absolute path.
         </small>
       </label>

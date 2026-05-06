@@ -175,7 +175,7 @@
       info =
         `Exported backup of ${$activeIdentity.username}@${$activeIdentity.domain} ` +
         `(${result.file_count} files, ${result.total_bytes} bytes) to ${result.archive_path}. ` +
-        `Store it in an encrypted vault — the archive is NOT encrypted.`;
+        `Store it in an encrypted vault. The archive is NOT encrypted.`;
       showExportBackup = false;
       exportBackupOutputPath = "";
     } catch (err) {
@@ -374,7 +374,7 @@
       return;
     }
     if (!selectedZone) {
-      error = "Selected node has no zone — pick another node.";
+      error = "Selected node has no zone. Pick another node.";
       return;
     }
     createStep = "details";
@@ -443,7 +443,7 @@
       return;
     }
     if (formPassphrase !== formPassphraseConfirm) {
-      error = "Passphrases don't match — re-type both to continue.";
+      error = "Passphrases don't match. Re-type both to continue.";
       return;
     }
     if (!selectedNode || !selectedZone) {
@@ -548,12 +548,12 @@
         await api.publishIdentity();
         stagePublish = "done";
         publishedSubject = `${result.username}@${result.domain}`;
-        info = `PUBLISHED — ${publishedSubject} is live in DNS.`;
+        info = `PUBLISHED. ${publishedSubject} is live in DNS.`;
         void refreshPublishedStatus();
       } catch (pubErr) {
         stagePublish = "failed";
         publishError = isCommandError(pubErr) ? pubErr.message : String(pubErr);
-        info = `Identity created and TSIG configured — but the initial publish failed. You can retry below, or from Identities/Settings later.`;
+        info = `Identity created and TSIG configured, but the initial publish failed. You can retry below, or from Identities/Settings later.`;
       }
 
       clearInbox();
@@ -590,7 +590,7 @@
       stagePublish = "done";
       if ($activeIdentity) {
         publishedSubject = `${$activeIdentity.username}@${$activeIdentity.domain}`;
-        info = `PUBLISHED — ${publishedSubject} is live in DNS.`;
+        info = `PUBLISHED. ${publishedSubject} is live in DNS.`;
       } else {
         info = "PUBLISHED.";
       }
@@ -632,7 +632,7 @@
         switchTargetUsername,
         switchPassphrase,
       );
-      info = `ACTIVE — ${result.username}@${result.domain}.`;
+      info = `ACTIVE. ${result.username}@${result.domain}.`;
       switchPassphrase = "";
       switchTargetUsername = "";
       clearInbox();
@@ -736,20 +736,20 @@
       <h2 class="welcome-title">Welcome to DNSMesh.</h2>
       <p>
         DNSMesh is end-to-end-encrypted messaging that runs over the
-        public DNS system — every message is signed by you and decrypted
+        public DNS system. Every message is signed by you and decrypted
         only by the recipient. Your identity is yours; nobody else holds
         your keys.
       </p>
       <p>To get started:</p>
       <ul>
         <li>
-          Pick a DMP node — the operator who'll host your identity records.
+          Pick a DMP node, the operator who'll host your identity records.
           The desktop ships a curated list of public nodes; pick whichever
           looks closest to you.
         </li>
         <li>
           Choose a username and a passphrase. The passphrase is the input
-          to the key-derivation function — write it down, you can't recover
+          to the key-derivation function. Write it down, you can't recover
           a forgotten passphrase.
         </li>
         <li>
@@ -862,7 +862,7 @@
   {/if}
   {#if identities.length === 0}
     {#if !onboarding}
-      <p class="muted">None yet — create one below.</p>
+      <p class="muted">None yet. Create one below.</p>
     {/if}
   {:else}
     <table>
@@ -1018,7 +1018,7 @@
         />
         <small class="muted">
           The host auto-appends <code>.dmp-backup.tar.gz</code> if you
-          omit it. Tildes (<code>~</code>) are NOT expanded — supply
+          omit it. Tildes (<code>~</code>) are NOT expanded; supply
           an absolute path on disk.
         </small>
       </label>
@@ -1078,7 +1078,7 @@
         />
         <small class="muted">
           Only set this if the CLI's username already exists in the
-          desktop — the import will fail otherwise.
+          desktop, or the import will fail.
         </small>
       </label>
       {#if importCliError}
@@ -1250,7 +1250,7 @@
                       </span>
                     {:else}
                       <span class="muted small">
-                        No live heartbeat — this node can't be picked
+                        No live heartbeat. This node can't be picked
                         right now.
                       </span>
                     {/if}
@@ -1333,7 +1333,7 @@
               </ul>
             {:else}
               <p class="muted small">
-                Click "Discover nodes" or wait — we auto-search after you
+                Click "Discover nodes" or wait. We auto-search after you
                 stop typing the zone.
               </p>
             {/if}
@@ -1401,7 +1401,7 @@
       </label>
       {#if passphraseMismatch}
         <p class="error small">
-          Passphrases don't match — re-type both to continue.
+          Passphrases don't match. Re-type both to continue.
         </p>
       {/if}
 

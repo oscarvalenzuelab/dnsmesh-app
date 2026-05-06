@@ -144,6 +144,30 @@ jobs:
       - name: Build APK (release, all ABIs)
         run: cargo tauri android build --apk
 
+      - name: Overlay committed Android icons
+        # Tauri's `android init` (re-run by `cargo tauri android build`)
+        # generates a placeholder icon set (turquoise / yellow loop)
+        # that has nothing to do with our app icon. We overlay our
+        # committed Android icons here, AFTER `cargo tauri android
+        # build` has finished its regeneration but BEFORE the proguard
+        # workaround's `gradlew :app:assembleUniversalRelease` re-run
+        # below — that re-run is what bakes the final APK from the
+        # `res/` tree, so the overlaid icons end up shipping.
+        #
+        # Generated subtrees we don't touch (drawable*, layout, values)
+        # are left as-is. The committed icon set mirrors the
+        # `mipmap-*` + `mipmap-anydpi-v26` + `values` layout.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d src-tauri/icons/android ]; then
+            echo "::warning::src-tauri/icons/android missing; APK will ship the Tauri placeholder icon"
+          else
+            cp -R src-tauri/icons/android/* \
+              src-tauri/gen/android/app/src/main/res/
+            echo "Overlaid icons from src-tauri/icons/android/"
+          fi
+
       - name: Apply wry getId() ProGuard workaround (issue #8)
         # `wry <= 0.55.0`'s `proguard-wry.pro` template is missing
         # `int getId();` for `WryActivity`. R8 strips the Kotlin auto-

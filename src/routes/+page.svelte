@@ -410,7 +410,7 @@
   }
 
   function formatTimestamp(ts: number): string {
-    if (!ts) return "—";
+    if (!ts) return "";
     const d = new Date(ts * 1000);
     const now = new Date();
     const sameDay =
@@ -606,7 +606,7 @@
           <div class="messages" bind:this={threadEl}>
             {#if activeConversation.messages.length === 0}
               <div class="empty-thread inline">
-                <p class="muted small">No messages yet — say hi.</p>
+                <p class="muted small">No messages yet. Say hi.</p>
               </div>
             {/if}
             {#each activeConversation.messages as m (m.msg_id_hex)}
@@ -1082,7 +1082,13 @@
   }
 
   .composer {
-    padding: 0.5rem 0.75rem 0.85rem;
+    /* Pad to clear Android's gesture nav bar / iOS home indicator;
+       desktop has 0 inset and uses the static 0.85rem. */
+    padding:
+      0.5rem
+      max(0.75rem, env(safe-area-inset-right))
+      max(0.85rem, env(safe-area-inset-bottom))
+      max(0.75rem, env(safe-area-inset-left));
     background: var(--surface);
     border-top: 1px solid var(--border);
     display: flex;
@@ -1090,7 +1096,11 @@
     gap: 0.4rem;
   }
   .composer-disabled {
-    padding: 1rem;
+    padding:
+      1rem
+      max(1rem, env(safe-area-inset-right))
+      max(1rem, env(safe-area-inset-bottom))
+      max(1rem, env(safe-area-inset-left));
     text-align: center;
     border-top: 1px solid var(--border);
     background: var(--surface);
