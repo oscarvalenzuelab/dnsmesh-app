@@ -81,7 +81,7 @@
   <p class="prose">
     DMP is an open protocol for moving end-to-end encrypted messages between
     two people using DNS as the transport. Identities, prekeys, and mailbox
-    slots all resolve as DNS records — there is no central server, no app
+    slots all resolve as DNS records. There is no central server, no app
     store, and no gatekeeper between sender and recipient.
   </p>
 </section>
