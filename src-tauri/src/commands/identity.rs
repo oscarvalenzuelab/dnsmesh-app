@@ -10,9 +10,11 @@ use tauri::State;
 use dnsmesh_client::{DmpClient, DmpClientConfig};
 
 use crate::error::{CommandError, CommandResult};
+use std::sync::Arc;
+
 use crate::state::{
-    ActiveClient, AppState, IdentityConfig, IdentityIndexEntry, PublishConfig, build_reader,
-    build_writer, sanitize_username,
+    ActiveClient, AppState, IdentityConfig, IdentityIndexEntry, PublishConfig, RefreshableReader,
+    build_reader, build_writer, sanitize_username,
 };
 
 /// Length of the per-identity Argon2id salt we mint on first creation.
@@ -158,7 +160,8 @@ pub async fn init_or_unlock(
 
     let kdf_salt = ensure_kdf_salt(&mut cfg, &state, &username)?;
 
-    let reader = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
+    let inner_reader = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
+    let refreshable_reader = Arc::new(RefreshableReader::new(inner_reader));
     let (writer, publish_configured) =
         build_writer(cfg.publish.as_ref()).map_err(CommandError::from)?;
 
@@ -169,7 +172,7 @@ pub async fn init_or_unlock(
         kdf_salt: Some(kdf_salt),
         db_path: Some(db_path),
         writer,
-        reader,
+        reader: refreshable_reader.clone(),
         // Rotation-chain walk is opt-in pending external audit of the
         // wire format; mirrors the SDK and CLI defaults.
         rotation_chain_enabled: false,
@@ -181,6 +184,7 @@ pub async fn init_or_unlock(
         username: username.clone(),
         domain: domain.clone(),
         publish_configured,
+        refreshable_reader,
     };
 
     if !index.identities.iter().any(|e| e.username == username) {

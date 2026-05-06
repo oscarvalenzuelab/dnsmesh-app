@@ -9,11 +9,13 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
 use dnsmesh_client::DmpClient;
 use dnsmesh_net::{
     DnsRecordReader, DnsRecordWriter, DnsUpdateWriter, DnsUpdateWriterConfig, InMemoryDnsStore,
-    ResolverPool, TsigAlgorithm, TsigKey,
+    NetError, ResolverPool, TsigAlgorithm, TsigKey,
 };
+use parking_lot::RwLock as ParkingLotRwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -140,12 +142,55 @@ fn default_tsig_algorithm() -> String {
     "hmac-sha256".to_string()
 }
 
+/// A `DnsRecordReader` whose backing pool can be swapped at runtime
+/// without rebuilding the surrounding `DmpClient`.
+///
+/// Hickory's resolver pools cache UDP sockets bound to whichever
+/// network interface was active at construction time. When a VPN
+/// drops on Android, those sockets stay bound to the now-defunct
+/// tunnel interface and writes silently fail. We hand the SDK an
+/// `Arc<RefreshableReader>` once and call [`Self::replace`] to swap
+/// in a freshly-built pool when the network changes.
+pub struct RefreshableReader {
+    inner: ParkingLotRwLock<Arc<dyn DnsRecordReader>>,
+}
+
+impl RefreshableReader {
+    /// Wrap an initial reader.
+    pub fn new(initial: Arc<dyn DnsRecordReader>) -> Self {
+        Self {
+            inner: ParkingLotRwLock::new(initial),
+        }
+    }
+
+    /// Atomically swap the inner reader. The previous reader is
+    /// dropped once the last in-flight query that captured it returns.
+    pub fn replace(&self, next: Arc<dyn DnsRecordReader>) {
+        *self.inner.write() = next;
+    }
+}
+
+#[async_trait]
+impl DnsRecordReader for RefreshableReader {
+    async fn query_txt_record(&self, name: &str) -> Result<Option<Vec<String>>, NetError> {
+        // Clone the Arc under the lock, drop the lock, then await on
+        // the inner. Lock is never held across `.await`.
+        let inner = self.inner.read().clone();
+        inner.query_txt_record(name).await
+    }
+}
+
 /// The active client + a flag for whether publishing is wired.
+///
+/// `refreshable_reader` is the same `Arc<RefreshableReader>` handed
+/// into the `DmpClient` at construction; we keep a clone so the
+/// `refresh_network` command can swap the inner pool atomically.
 pub struct ActiveClient {
     pub client: DmpClient,
     pub username: String,
     pub domain: String,
     pub publish_configured: bool,
+    pub refreshable_reader: Arc<RefreshableReader>,
 }
 
 /// Process-wide state plumbed via `tauri::State`.
@@ -325,6 +370,35 @@ fn read_tsig_secret(path: &Path) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Two `InMemoryDnsStore`s with different content. After swapping
+    /// the wrapper's inner reader, queries must observe the new
+    /// backend.
+    #[tokio::test]
+    async fn refreshable_reader_swap_is_observable() {
+        let first = Arc::new(InMemoryDnsStore::new());
+        first
+            .publish_txt_record("a.example.", "first", 60)
+            .await
+            .unwrap();
+        let second = Arc::new(InMemoryDnsStore::new());
+        second
+            .publish_txt_record("a.example.", "second", 60)
+            .await
+            .unwrap();
+
+        let wrapper = RefreshableReader::new(first.clone());
+        assert_eq!(
+            wrapper.query_txt_record("a.example.").await.unwrap(),
+            Some(vec!["first".to_string()]),
+        );
+
+        wrapper.replace(second.clone());
+        assert_eq!(
+            wrapper.query_txt_record("a.example.").await.unwrap(),
+            Some(vec!["second".to_string()]),
+        );
+    }
 
     #[test]
     fn save_load_index_round_trip() {
