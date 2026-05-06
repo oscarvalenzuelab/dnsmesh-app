@@ -15,6 +15,20 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## 0.1.0-alpha.5 — 2026-05-06
+
+First release under the new `dnsmesh-app` name.
+
+### Changed
+
+- Project renamed from `dnsmesh-desktop` to `dnsmesh-app`. Cargo
+  crate, Rust lib, Tauri identifier (`io.dnsmesh.desktop` →
+  `io.dnsmesh.app`), `package.json` name, release tag prefix
+  (`desktop-v*` → `v*`), and all repo URLs in README, SECURITY,
+  CONTRIBUTING, and the in-app About page point at the new
+  GitHub URL. Old `dnsmesh-desktop` URLs auto-redirect on GitHub.
+- Releases no longer auto-mark alpha/beta/rc tags as pre-release.
+
 ## 0.1.0-alpha.4 — 2026-05-06
 
 Android UX polish.
