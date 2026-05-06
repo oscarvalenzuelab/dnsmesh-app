@@ -951,6 +951,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnsmesh-app"
+version = "0.1.0-alpha.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "dnsmesh-client",
+ "dnsmesh-core",
+ "dnsmesh-net",
+ "dnsmesh-storage",
+ "flate2",
+ "hex",
+ "parking_lot",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dnsmesh-client"
 version = "0.1.1"
 dependencies = [
@@ -987,36 +1017,6 @@ dependencies = [
  "thiserror 2.0.18",
  "x25519-dalek",
  "zeroize",
-]
-
-[[package]]
-name = "dnsmesh-desktop"
-version = "0.1.0-alpha.4"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "dnsmesh-client",
- "dnsmesh-core",
- "dnsmesh-net",
- "dnsmesh-storage",
- "flate2",
- "hex",
- "parking_lot",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "rpassword",
- "serde",
- "serde_json",
- "serde_yaml",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

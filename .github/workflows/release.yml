@@ -1,7 +1,7 @@
 name: Release
 
-# Orchestrator. Fires on `desktop-v*` tags, validates the tag's
-# version against the manifest files, pre-creates the GH Release, then
+# Orchestrator. Fires on `v*` tags, validates the tag's version
+# against the manifest files, pre-creates the GH Release, then
 # delegates each platform's build to its own reusable workflow. The
 # per-platform workflows are also `workflow_dispatch`-triggerable so a
 # flaky leg can be re-run on its own without re-doing the others.
@@ -9,7 +9,7 @@ name: Release
 on:
   push:
     tags:
-      - "desktop-v*"
+      - "v*"
 
 permissions:
   contents: write
@@ -35,10 +35,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF#refs/tags/}"
-          if [[ "$tag" =~ ^desktop-v([0-9]+\.[0-9]+\.[0-9]+([-+].+)?)$ ]]; then
+          if [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([-+].+)?)$ ]]; then
             version="${BASH_REMATCH[1]}"
           else
-            echo "::error::tag '$tag' does not match desktop-v<semver>"
+            echo "::error::tag '$tag' does not match v<semver>"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

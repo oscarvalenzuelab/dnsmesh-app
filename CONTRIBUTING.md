@@ -14,7 +14,7 @@ cargo test
 
 The desktop app depends on the [`dnsmesh-rs`](https://github.com/oscarvalenzuelab/dnsmesh-rs)
 SDK for protocol logic. UI changes should target Tauri commands defined in
-`src-tauri/src/commands/`. Keep frontend code free of protocol logic — call
+`src-tauri/src/commands/`. Keep frontend code free of protocol logic; call
 into Rust via `@tauri-apps/api` (wrapped in `src/lib/api.ts`) instead.
 
 ## Building locally
@@ -25,12 +25,12 @@ The current `src-tauri/Cargo.toml` declares the dnsmesh-rs crates by
 ```
 ~/Projects/.../DMP/
 ├── dnsmesh-rs/         # SDK (Rust workspace)
-└── dnsmesh-desktop/    # this repo
+└── dnsmesh-app/        # this repo
 ```
 
 Layout assumed:
 
-- `dnsmesh-desktop/src-tauri/Cargo.toml` references
+- `dnsmesh-app/src-tauri/Cargo.toml` references
   `../../dnsmesh-rs/crates/{dnsmesh-core,dnsmesh-net,dnsmesh-storage,dnsmesh-client}`.
 - Each crate must be on its `main` branch (or whichever branch carries
   the SDK changes you want to consume).
@@ -107,7 +107,7 @@ To bump the pin:
 # in dnsmesh-rs:
 git rev-parse main
 
-# in dnsmesh-desktop, paste the SHA:
+# in dnsmesh-app, paste the SHA:
 echo "<sha>" > .dnsmesh-rs-ref
 git add .dnsmesh-rs-ref
 git commit -m "Bump dnsmesh-rs pin to <sha>"

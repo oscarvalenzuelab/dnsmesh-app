@@ -2,7 +2,7 @@ name: Release - macOS
 
 # Builds the macOS aarch64 + x86_64 .dmg / .app.tar.gz bundles and
 # uploads them to the GH Release identified by `inputs.tag`. Called by
-# the orchestrator on every `desktop-v*` tag push, and also exposed as
+# the orchestrator on every `v*` tag push, and also exposed as
 # `workflow_dispatch` so a flaky leg can be re-triggered manually
 # without re-running the linux / windows builds.
 
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. desktop-v0.1.0-alpha.1)."
+        description: "Release tag (e.g. v0.1.0-alpha.5)."
         required: true
         type: string
       sdk_ref:

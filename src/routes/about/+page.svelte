@@ -46,10 +46,10 @@
     <li>
       Desktop client repo:
       <a
-        href="https://github.com/oscarvalenzuelab/dnsmesh-desktop"
+        href="https://github.com/oscarvalenzuelab/dnsmesh-app"
         target="_blank"
         rel="noopener noreferrer"
-      >github.com/oscarvalenzuelab/dnsmesh-desktop</a>
+      >github.com/oscarvalenzuelab/dnsmesh-app</a>
     </li>
     <li>
       Rust SDK + CLI:
@@ -70,10 +70,10 @@
     <li>
       Report a bug:
       <a
-        href="https://github.com/oscarvalenzuelab/dnsmesh-desktop/issues"
+        href="https://github.com/oscarvalenzuelab/dnsmesh-app/issues"
         target="_blank"
         rel="noopener noreferrer"
-      >github.com/oscarvalenzuelab/dnsmesh-desktop/issues</a>
+      >github.com/oscarvalenzuelab/dnsmesh-app/issues</a>
     </li>
   </ul>
 

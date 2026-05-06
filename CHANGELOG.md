@@ -97,7 +97,7 @@ matrix, and a round of audit fixes.
   Settings / About) replaces the always-visible left sidebar.
   Brand mark links home from anywhere.
 - **Android APK build.** New `release-android.yml` workflow added
-  to the orchestrator; the next `desktop-v*` tag fans out to four
+  to the orchestrator; the next `v*` tag fans out to four
   platforms instead of three. APK is signed with Android's debug
   keystore — sideloadable, won't pass the Play Store. Real signing
   comes when there's a keystore secret to wire in. **Experimental:**
