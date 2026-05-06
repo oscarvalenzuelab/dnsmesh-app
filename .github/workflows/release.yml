@@ -129,14 +129,9 @@ jobs:
             gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_PATH"
             exit 0
           fi
-          PRERELEASE_FLAG=""
-          case "$TAG" in
-            *-alpha*|*-beta*|*-rc*) PRERELEASE_FLAG="--prerelease" ;;
-          esac
           gh release create "$TAG" \
             --repo "$REPO" \
             --title "$TAG" \
-            $PRERELEASE_FLAG \
             --notes-file "$NOTES_PATH"
 
   macos:
