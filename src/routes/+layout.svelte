@@ -7,6 +7,7 @@
     activeIdentity,
     publishedStatus,
     refreshActiveIdentity,
+    refreshPublishedStatus,
   } from "$lib/stores/identity";
   import { clearInbox, hydrateInbox, pollInbox } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
@@ -64,7 +65,13 @@
   async function runRepublish() {
     try {
       const res = await api.maybeRepublishIdentity();
-      if (res.action === "failed") {
+      if (res.action === "republished") {
+        // The Identities page reads $publishedStatus to decide between
+        // the Publish button and the "live in DNS" badge. After an
+        // auto-refresh from a previously-not_published state the badge
+        // would otherwise stay stale until the next manual lookup.
+        void refreshPublishedStatus();
+      } else if (res.action === "failed") {
         console.warn("[republish] failed:", res.reason);
       }
     } catch (err) {

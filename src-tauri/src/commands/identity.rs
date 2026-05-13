@@ -180,7 +180,7 @@ pub async fn init_or_unlock(
     let client = DmpClient::new(client_cfg).await?;
 
     let active = ActiveClient {
-        client,
+        client: Arc::new(client),
         username: username.clone(),
         domain: domain.clone(),
         publish_configured,
@@ -577,18 +577,25 @@ pub enum RepublishSkipReason {
 pub async fn maybe_republish_identity(
     state: State<'_, AppState>,
 ) -> CommandResult<MaybeRepublishResult> {
-    let guard = state.active.read().await;
-    let Some(active) = guard.as_ref() else {
-        return Ok(MaybeRepublishResult::Skipped {
-            reason: RepublishSkipReason::NotInitialized,
-        });
+    // Snapshot the Arc under the read guard, then drop the guard before
+    // the (potentially slow) network publish so concurrent
+    // `lock_identity` / `switch_identity` / `update_publish_config`
+    // don't block waiting for a sluggish TSIG server.
+    let client = {
+        let guard = state.active.read().await;
+        let Some(active) = guard.as_ref() else {
+            return Ok(MaybeRepublishResult::Skipped {
+                reason: RepublishSkipReason::NotInitialized,
+            });
+        };
+        if !active.publish_configured {
+            return Ok(MaybeRepublishResult::Skipped {
+                reason: RepublishSkipReason::NoPublishConfig,
+            });
+        }
+        Arc::clone(&active.client)
     };
-    if !active.publish_configured {
-        return Ok(MaybeRepublishResult::Skipped {
-            reason: RepublishSkipReason::NoPublishConfig,
-        });
-    }
-    match active.client.publish_identity().await {
+    match client.publish_identity().await {
         Ok(()) => Ok(MaybeRepublishResult::Republished),
         Err(e) => Ok(MaybeRepublishResult::Failed {
             reason: e.to_string(),

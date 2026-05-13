@@ -186,7 +186,12 @@ impl DnsRecordReader for RefreshableReader {
 /// into the `DmpClient` at construction; we keep a clone so the
 /// `refresh_network` command can swap the inner pool atomically.
 pub struct ActiveClient {
-    pub client: DmpClient,
+    /// Wrapped in `Arc` so background commands can take a snapshot
+    /// (e.g. the unlock+24h republish heartbeat) and drop the outer
+    /// `state.active.read()` guard before issuing a slow network call.
+    /// Without this, `lock_identity` / `switch_identity` block behind
+    /// an in-flight publish whenever the TSIG server is sluggish.
+    pub client: Arc<DmpClient>,
     pub username: String,
     pub domain: String,
     pub publish_configured: bool,
