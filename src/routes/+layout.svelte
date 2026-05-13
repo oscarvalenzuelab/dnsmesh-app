@@ -7,6 +7,7 @@
     activeIdentity,
     publishedStatus,
     refreshActiveIdentity,
+    refreshPublishedStatus,
   } from "$lib/stores/identity";
   import { clearInbox, hydrateInbox, pollInbox } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
@@ -46,6 +47,60 @@
       pollHandle = null;
     }
   }
+
+  // Identity re-publish heartbeat. Fires once immediately after unlock,
+  // then every 24h. publish_identity() in the SDK is idempotent (writes
+  // a fresh signature over the same TXT name) so unconditional refresh
+  // is safe and keeps alpha testers discoverable across long gaps
+  // between sessions.
+  //
+  // Driven by an $effect on $activeIdentity rather than imperative
+  // start/stop calls: the identities page unlock/create flow updates
+  // the store via refreshActiveIdentity() but doesn't run topbar code,
+  // so a lifecycle-hook-driven heartbeat would miss the primary unlock
+  // path.
+  let republishHandle: ReturnType<typeof setInterval> | null = null;
+  const REPUBLISH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+  async function runRepublish() {
+    try {
+      const res = await api.maybeRepublishIdentity();
+      if (res.action === "republished") {
+        // The Identities page reads $publishedStatus to decide between
+        // the Publish button and the "live in DNS" badge. After an
+        // auto-refresh from a previously-not_published state the badge
+        // would otherwise stay stale until the next manual lookup.
+        void refreshPublishedStatus();
+      } else if (res.action === "failed") {
+        console.warn("[republish] failed:", res.reason);
+      }
+    } catch (err) {
+      console.warn("[republish] threw:", err);
+    }
+  }
+
+  function startRepublishHeartbeat() {
+    if (republishHandle !== null) return;
+    void runRepublish();
+    republishHandle = setInterval(
+      () => void runRepublish(),
+      REPUBLISH_INTERVAL_MS,
+    );
+  }
+
+  function stopRepublishHeartbeat() {
+    if (republishHandle !== null) {
+      clearInterval(republishHandle);
+      republishHandle = null;
+    }
+  }
+
+  $effect(() => {
+    if ($activeIdentity) {
+      startRepublishHeartbeat();
+    }
+    return () => stopRepublishHeartbeat();
+  });
 
   onMount(async () => {
     await refreshActiveIdentity();

@@ -131,6 +131,8 @@ export const api = {
     invoke("update_publish_config", { args }),
   isIdentityPublished: (): Promise<PublishedStatus> =>
     invoke("is_identity_published"),
+  maybeRepublishIdentity: (): Promise<MaybeRepublishResult> =>
+    invoke("maybe_republish_identity"),
 
   // contacts
   listContacts: (): Promise<ContactView[]> => invoke("list_contacts"),
@@ -337,6 +339,14 @@ export type PublishedStatus =
   | { status: "published" }
   | { status: "not_published" }
   | { status: "unknown"; reason: string };
+
+// Outcome of a background re-publish driven by the unlock + 24h
+// heartbeat. `failed` is reported instead of thrown so the heartbeat
+// loop can log + retry without surfacing a blocking modal.
+export type MaybeRepublishResult =
+  | { action: "republished" }
+  | { action: "skipped"; reason: "not_initialized" | "no_publish_config" }
+  | { action: "failed"; reason: string };
 
 // --- Import / backup -----------------------------------------------------
 
