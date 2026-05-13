@@ -95,21 +95,30 @@ pub struct IntroAcceptArgs {
 /// Accept an intro into the inbox WITHOUT pinning the sender.
 ///
 /// Returns `None` if the `intro_id` is unknown (e.g. already taken by
-/// a concurrent accept). The returned [`PersistedInboxMessage`] is
-/// shaped so the frontend can hand it straight to `inbox_append`.
+/// a concurrent accept). The plaintext is persisted to the active
+/// identity's `inbox.jsonl` BEFORE this returns — `accept_intro`
+/// consumes the durable intro row inside the SDK, so we must land
+/// the message on disk in the same Tauri call. Otherwise a failed
+/// frontend follow-up (lock, identity switch, panic) would leave
+/// the plaintext nowhere.
 #[tauri::command]
 pub async fn intro_accept(
     args: IntroAcceptArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<Option<DeliveredIntroView>> {
-    let guard = state.active.read().await;
-    let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
-    let Some(delivered) = active.client.accept_intro(args.intro_id).await? else {
-        return Ok(None);
+    let (delivered, username) = {
+        let guard = state.active.read().await;
+        let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
+        let Some(delivered) = active.client.accept_intro(args.intro_id).await? else {
+            return Ok(None);
+        };
+        (delivered, active.username.clone())
     };
+    let persisted = persisted_from(&delivered.message);
+    crate::commands::inbox::append_for_username(&state, &username, vec![persisted.clone()]).await?;
     Ok(Some(DeliveredIntroView {
         intro_id: delivered.intro_id,
-        message: persisted_from(&delivered.message),
+        message: persisted,
     }))
 }
 
@@ -131,24 +140,32 @@ pub struct IntroTrustArgs {
 ///
 /// Returns `Err(verify_failed)` when `address` resolves to a
 /// different `ed25519_spk` than the queued intro — in that case the
-/// queue row stays and the contact list is untouched.
+/// queue row stays and the contact list is untouched. As with
+/// [`intro_accept`], we persist the promoted plaintext to the
+/// active identity's `inbox.jsonl` BEFORE returning so a failed
+/// frontend follow-up can't drop the message.
 #[tauri::command]
 pub async fn intro_trust(
     args: IntroTrustArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<Option<DeliveredIntroView>> {
-    let guard = state.active.read().await;
-    let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
-    let Some(delivered) = active
-        .client
-        .trust_intro(args.intro_id, &args.address)
-        .await?
-    else {
-        return Ok(None);
+    let (delivered, username) = {
+        let guard = state.active.read().await;
+        let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
+        let Some(delivered) = active
+            .client
+            .trust_intro(args.intro_id, &args.address)
+            .await?
+        else {
+            return Ok(None);
+        };
+        (delivered, active.username.clone())
     };
+    let persisted = persisted_from(&delivered.message);
+    crate::commands::inbox::append_for_username(&state, &username, vec![persisted.clone()]).await?;
     Ok(Some(DeliveredIntroView {
         intro_id: delivered.intro_id,
-        message: persisted_from(&delivered.message),
+        message: persisted,
     }))
 }
 

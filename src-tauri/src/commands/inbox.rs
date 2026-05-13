@@ -196,17 +196,31 @@ pub async fn inbox_append(
             total: 0,
         });
     };
-    let lock = lock_for(&username).await;
+    append_for_username(&state, &username, args.messages).await
+}
+
+/// Reusable append body. Same dedupe + atomic-rewrite semantics as
+/// [`inbox_append`], but callable from other Tauri commands that
+/// already know the active username (e.g. the intro promote flow,
+/// which must persist before returning success to avoid a window
+/// where the durable intro row is consumed but the plaintext has
+/// not yet landed on disk).
+pub(crate) async fn append_for_username(
+    state: &AppState,
+    username: &str,
+    messages: Vec<PersistedInboxMessage>,
+) -> CommandResult<InboxAppendResult> {
+    let lock = lock_for(username).await;
     let _g = lock.lock();
-    let dir = state.identity_dir(&username);
+    let dir = state.identity_dir(username);
     std::fs::create_dir_all(&dir).map_err(CommandError::from)?;
-    let path = inbox_path(&state, &username);
+    let path = inbox_path_for(state, username);
     let existing = load_inbox_file(&path)?;
     let mut seen: HashSet<String> = existing.iter().map(|m| m.msg_id_hex.clone()).collect();
 
     let mut appended = 0usize;
     let mut additions: Vec<PersistedInboxMessage> = Vec::new();
-    for m in args.messages {
+    for m in messages {
         if seen.insert(m.msg_id_hex.clone()) {
             additions.push(m);
             appended += 1;
@@ -235,6 +249,10 @@ pub async fn inbox_append(
         appended,
         total: existing.len() + appended,
     })
+}
+
+fn inbox_path_for(state: &AppState, username: &str) -> PathBuf {
+    state.identity_dir(username).join(INBOX_FILE)
 }
 
 /// Args for [`inbox_mark_read`].

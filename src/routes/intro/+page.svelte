@@ -69,6 +69,8 @@
     clearRow(intro.intro_id);
     setRowBusy(intro.intro_id, true);
     try {
+      // intro_accept persists the message to disk in the same Tauri
+      // call, so we only need to refresh the in-memory inbox here.
       const delivered = await api.introAccept(intro.intro_id);
       if (!delivered) {
         setRowError(
@@ -78,7 +80,6 @@
         await refresh();
         return;
       }
-      await api.inboxAppend([delivered.message]);
       await hydrateInbox();
       intros = intros.filter((i) => i.intro_id !== intro.intro_id);
     } catch (err) {
@@ -114,13 +115,14 @@
     setRowBusy(intro_id, true);
     trustPrompt = null;
     try {
+      // intro_trust persists the message to disk in the same Tauri
+      // call (same atomicity reasoning as intro_accept).
       const delivered = await api.introTrust(intro_id, trimmed);
       if (!delivered) {
         setRowError(intro_id, "intro already taken");
         await refresh();
         return;
       }
-      await api.inboxAppend([delivered.message]);
       await Promise.all([hydrateInbox(), refreshContacts()]);
       intros = intros.filter((i) => i.intro_id !== intro_id);
     } catch (err) {
