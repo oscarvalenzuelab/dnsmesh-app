@@ -52,6 +52,12 @@
   // a fresh signature over the same TXT name) so unconditional refresh
   // is safe and keeps alpha testers discoverable across long gaps
   // between sessions.
+  //
+  // Driven by an $effect on $activeIdentity rather than imperative
+  // start/stop calls: the identities page unlock/create flow updates
+  // the store via refreshActiveIdentity() but doesn't run topbar code,
+  // so a lifecycle-hook-driven heartbeat would miss the primary unlock
+  // path.
   let republishHandle: ReturnType<typeof setInterval> | null = null;
   const REPUBLISH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -82,6 +88,13 @@
     }
   }
 
+  $effect(() => {
+    if ($activeIdentity) {
+      startRepublishHeartbeat();
+    }
+    return () => stopRepublishHeartbeat();
+  });
+
   onMount(async () => {
     await refreshActiveIdentity();
     await reloadList();
@@ -92,7 +105,6 @@
       void refreshContacts();
       void pollInbox();
       startPolling();
-      startRepublishHeartbeat();
     } else if (
       identities.length === 0 &&
       page.url.pathname !== "/identities"
@@ -101,10 +113,7 @@
     }
   });
 
-  onDestroy(() => {
-    stopPolling();
-    stopRepublishHeartbeat();
-  });
+  onDestroy(() => stopPolling());
 
   async function reloadList() {
     try {
@@ -160,7 +169,6 @@
       switchTarget = "";
       identityMenuOpen = false;
       stopPolling();
-      stopRepublishHeartbeat();
       clearInbox();
       clearSent();
       contacts.set([]);
@@ -171,7 +179,6 @@
       void refreshContacts();
       void pollInbox();
       startPolling();
-      startRepublishHeartbeat();
     } catch (err) {
       switchError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -183,7 +190,6 @@
     activeIdentity.set(null);
     publishedStatus.set(null);
     stopPolling();
-    stopRepublishHeartbeat();
     clearInbox();
     clearSent();
     contacts.set([]);
