@@ -352,6 +352,7 @@
         {#if overflowOpen}
           <div class="menu overflow-menu" role="menu">
             <button type="button" class="overflow-item" onclick={() => navTo("/")}>Chat</button>
+            <button type="button" class="overflow-item" onclick={() => navTo("/intro")}>Intros</button>
             <button type="button" class="overflow-item" onclick={() => navTo("/contacts")}>Contacts</button>
             <button type="button" class="overflow-item" onclick={() => navTo("/identities")}>Identities</button>
             <button type="button" class="overflow-item" onclick={() => navTo("/settings")}>Settings</button>

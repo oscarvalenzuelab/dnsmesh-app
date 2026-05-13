@@ -86,6 +86,11 @@ export interface IdentityConfigView {
   username: string;
   publish: PublishConfigView | null;
   resolvers: string[];
+  /**
+   * Cross-zone claim-via provider zones. Empty when the identity
+   * hasn't opted into a provider.
+   */
+  claim_via: string[];
 }
 
 export interface UpdatePublishArgs {
@@ -105,6 +110,11 @@ export interface UpdatePublishArgs {
     tsig_secret_base64?: string | null;
   } | null;
   resolvers?: string[] | null;
+  /**
+   * Claim-via provider zones. `undefined` preserves the prior value;
+   * an empty array clears it.
+   */
+  claim_via?: string[] | null;
 }
 
 export const api = {
@@ -181,6 +191,18 @@ export const api = {
   inboxDelete: (msg_id_hexes: string[]): Promise<InboxDeleteResult> =>
     invoke("inbox_delete", { args: { msg_id_hexes } }),
 
+  // intro queue (first-contact quarantine)
+  introList: (): Promise<IntroView[]> => invoke("intro_list"),
+  introAccept: (intro_id: number): Promise<DeliveredIntroView | null> =>
+    invoke("intro_accept", { args: { intro_id } }),
+  introTrust: (
+    intro_id: number,
+    address: string,
+  ): Promise<DeliveredIntroView | null> =>
+    invoke("intro_trust", { args: { intro_id, address } }),
+  introBlock: (intro_id: number, note: string): Promise<IntroBlockResult> =>
+    invoke("intro_block", { args: { intro_id, note } }),
+
   // import / backup
   importFromCli: (args: ImportFromCliArgs): Promise<ImportFromCliResult> =>
     invoke("import_from_cli", { args }),
@@ -233,6 +255,14 @@ export interface InboxMessageView {
   timestamp: number;
   plaintext_utf8: string;
   plaintext_bytes: number[];
+  /**
+   * SPK-verified `user@host` label from the inbound DMPv2 envelope.
+   * `null` when the message arrived without an envelope (v1 sender)
+   * or the envelope's `from` claim failed SPK binding. UI should
+   * render this when present and fall back to `sender_signing_pk_hex`
+   * otherwise.
+   */
+  sender_label: string | null;
 }
 
 // Persisted inbox row from `<identity-dir>/inbox.jsonl`. Same payload as
@@ -243,6 +273,7 @@ export interface PersistedInboxMessage {
   timestamp: number;
   plaintext_utf8: string;
   plaintext_bytes: number[];
+  sender_label: string | null;
 }
 
 // Inbox row + `read` flag derived from the per-identity read-state file.
@@ -258,6 +289,28 @@ export interface InboxAppendResult {
 // `inbox_delete` is idempotent; `removed` counts the ids that were present.
 export interface InboxDeleteResult {
   removed: number;
+}
+
+// --- Intro queue ----------------------------------------------------------
+
+export interface IntroView {
+  intro_id: number;
+  sender_spk_hex: string;
+  sender_label: string | null;
+  msg_id_hex: string;
+  plaintext_utf8: string;
+  plaintext_bytes: number[];
+  received_at: number;
+  expires_at: number;
+}
+
+export interface DeliveredIntroView {
+  intro_id: number;
+  message: PersistedInboxMessage;
+}
+
+export interface IntroBlockResult {
+  removed: boolean;
 }
 
 // --- Nodes ----------------------------------------------------------------

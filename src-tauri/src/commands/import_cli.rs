@@ -287,6 +287,10 @@ fn do_import(args: ImportFromCliArgs, state: &AppState) -> CommandResult<ImportF
         resolvers: cli.resolvers,
         publish,
         kdf_salt_base64,
+        // CLI imports never carry claim-via — that lives in the
+        // desktop config, not the CLI's config.yaml. Set the
+        // settings page after import if the user wants providers.
+        claim_via: None,
     };
     state
         .save_identity_config(&final_username, &cfg)

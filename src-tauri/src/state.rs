@@ -122,6 +122,16 @@ pub struct IdentityConfig {
     /// share a `user_id` and collide on slot labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_salt_base64: Option<String>,
+
+    /// Cross-zone claim discovery zones. When non-empty, send paths
+    /// publish a `ClaimRecord` into each listed zone (mirrors the
+    /// CLI's `--claim-via PROVIDER_ZONE`) so a recipient whose poll
+    /// walks the same provider zone can pick up the message without
+    /// the sender writing into the recipient's authoritative zone.
+    /// The poll loop also walks every configured zone via
+    /// `receive_via_claim`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_via: Option<Vec<String>>,
 }
 
 /// TSIG-signed publish destination.
@@ -196,6 +206,11 @@ pub struct ActiveClient {
     pub domain: String,
     pub publish_configured: bool,
     pub refreshable_reader: Arc<RefreshableReader>,
+    /// Configured claim-via provider zones for cross-zone first-
+    /// contact. Empty when the identity hasn't opted into a
+    /// provider. Snapshotted at unlock; settings changes drop the
+    /// active client so the next unlock picks up the new list.
+    pub claim_via: Vec<String>,
 }
 
 /// Process-wide state plumbed via `tauri::State`.
@@ -460,11 +475,17 @@ mod tests {
                 tsig_secret_path: PathBuf::from("tsig.key"),
             }),
             kdf_salt_base64: None,
+            claim_via: Some(vec!["claims.example.com".into()]),
         };
         state.save_identity_config("alice", &cfg).unwrap();
         let loaded = state.load_identity_config("alice").unwrap();
         assert_eq!(loaded.resolvers.as_ref().unwrap().len(), 1);
         assert!(loaded.publish.is_some());
+        assert_eq!(
+            loaded.claim_via.as_deref(),
+            Some(&["claims.example.com".to_string()][..]),
+            "claim_via must round-trip through yaml",
+        );
     }
 
     #[test]

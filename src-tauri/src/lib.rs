@@ -87,6 +87,11 @@ pub fn run() {
             commands::inbox::inbox_mark_read,
             commands::inbox::inbox_mark_all_read,
             commands::inbox::inbox_delete,
+            // intro queue (first-contact quarantine)
+            commands::intro::intro_list,
+            commands::intro::intro_accept,
+            commands::intro::intro_trust,
+            commands::intro::intro_block,
             // nodes
             commands::nodes::list_known_resolvers,
             commands::nodes::list_known_nodes,

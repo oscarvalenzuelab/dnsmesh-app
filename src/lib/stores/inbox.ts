@@ -168,6 +168,7 @@ function toPersisted(m: InboxMessageView) {
     timestamp: m.timestamp,
     plaintext_utf8: m.plaintext_utf8,
     plaintext_bytes: m.plaintext_bytes,
+    sender_label: m.sender_label,
   };
 }
 

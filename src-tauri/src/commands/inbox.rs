@@ -37,6 +37,11 @@ pub struct PersistedInboxMessage {
     pub timestamp: u64,
     pub plaintext_utf8: String,
     pub plaintext_bytes: Vec<u8>,
+    /// SPK-verified `user@host` label from the inbound DMPv2
+    /// envelope. Added in 0.1.0-alpha.7; older `inbox.jsonl` rows
+    /// deserialize as `None` via the serde default.
+    #[serde(default)]
+    pub sender_label: Option<String>,
 }
 
 /// File name used for the per-identity append-only inbox log.
@@ -127,6 +132,7 @@ pub struct InboxRow {
     pub timestamp: u64,
     pub plaintext_utf8: String,
     pub plaintext_bytes: Vec<u8>,
+    pub sender_label: Option<String>,
     pub read: bool,
 }
 
@@ -154,6 +160,7 @@ pub async fn inbox_load(state: State<'_, AppState>) -> CommandResult<Vec<InboxRo
                 timestamp: m.timestamp,
                 plaintext_utf8: m.plaintext_utf8,
                 plaintext_bytes: m.plaintext_bytes,
+                sender_label: m.sender_label,
                 read,
             }
         })
@@ -383,6 +390,7 @@ mod tests {
             timestamp: 1_700_000_000 + u64::from(id),
             plaintext_utf8: format!("hello {id}"),
             plaintext_bytes: format!("hello {id}").into_bytes(),
+            sender_label: None,
         }
     }
 
@@ -585,6 +593,7 @@ mod tests {
                 timestamp: m.timestamp,
                 plaintext_utf8: m.plaintext_utf8,
                 plaintext_bytes: m.plaintext_bytes,
+                sender_label: m.sender_label,
             })
             .collect();
         assert_eq!(rows.len(), 2);

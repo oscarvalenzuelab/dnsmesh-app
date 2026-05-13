@@ -185,6 +185,7 @@ pub async fn init_or_unlock(
         domain: domain.clone(),
         publish_configured,
         refreshable_reader,
+        claim_via: cfg.claim_via.clone().unwrap_or_default(),
     };
 
     if !index.identities.iter().any(|e| e.username == username) {
@@ -209,6 +210,13 @@ pub async fn get_identity_info(state: State<'_, AppState>) -> CommandResult<Opti
 }
 
 /// Publish the active identity's signed record to DNS.
+///
+/// Always advertises DMPv2 capability (`versions = [1, 2]`) so v2-aware
+/// senders can wrap their plaintext in a DMPv2 envelope and the desktop
+/// can render a SPK-verified `sender_label` for first-contact messages.
+/// The desktop is the canonical first-contact-friendly DMP client; v1
+/// senders keep working unchanged (the recipient just falls back to a
+/// hex SPK in the inbox row).
 #[tauri::command]
 pub async fn publish_identity(state: State<'_, AppState>) -> CommandResult<()> {
     let guard = state.active.read().await;
@@ -219,7 +227,7 @@ pub async fn publish_identity(state: State<'_, AppState>) -> CommandResult<()> {
             "no publish (TSIG) block configured for this identity",
         ));
     }
-    active.client.publish_identity().await?;
+    active.client.publish_identity(true).await?;
     Ok(())
 }
 
@@ -318,6 +326,10 @@ pub struct IdentityConfigView {
     pub username: String,
     pub publish: Option<PublishConfigView>,
     pub resolvers: Vec<String>,
+    /// Claim-via provider zones used for cross-zone first-contact
+    /// delivery. Empty when the identity hasn't opted into a
+    /// provider.
+    pub claim_via: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -348,6 +360,7 @@ pub async fn get_identity_config(
             tsig_secret_path: p.tsig_secret_path.to_string_lossy().into_owned(),
         }),
         resolvers: cfg.resolvers.unwrap_or_default(),
+        claim_via: cfg.claim_via.unwrap_or_default(),
     })
 }
 
@@ -360,6 +373,10 @@ pub struct UpdatePublishArgs {
     pub publish: Option<PublishConfigInput>,
     #[serde(default)]
     pub resolvers: Option<Vec<String>>,
+    /// Claim-via provider zones for cross-zone first-contact. `None`
+    /// leaves the existing value untouched; `Some(empty)` clears it.
+    #[serde(default)]
+    pub claim_via: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -473,10 +490,29 @@ pub async fn update_publish_config(
     let prior = state
         .load_identity_config(&username)
         .map_err(CommandError::from)?;
+    // `claim_via: None` in the args preserves the prior value (so a
+    // settings-page save that only touches publish doesn't wipe the
+    // user's configured provider zones). `Some(vec![])` clears it.
+    let claim_via = match args.claim_via {
+        Some(zones) => {
+            let cleaned: Vec<String> = zones
+                .into_iter()
+                .map(|z| z.trim().to_string())
+                .filter(|z| !z.is_empty())
+                .collect();
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            }
+        }
+        None => prior.claim_via.clone(),
+    };
     let cfg = IdentityConfig {
         resolvers: args.resolvers,
         publish,
         kdf_salt_base64: prior.kdf_salt_base64,
+        claim_via,
     };
     state
         .save_identity_config(&username, &cfg)
@@ -503,6 +539,7 @@ pub async fn update_publish_config(
             tsig_secret_path: p.tsig_secret_path.to_string_lossy().into_owned(),
         }),
         resolvers: cfg.resolvers.unwrap_or_default(),
+        claim_via: cfg.claim_via.unwrap_or_default(),
     };
     Ok(view)
 }
@@ -595,7 +632,9 @@ pub async fn maybe_republish_identity(
         }
         Arc::clone(&active.client)
     };
-    match client.publish_identity().await {
+    // Same `advertise_v2 = true` rationale as `publish_identity` —
+    // every heartbeat re-publish keeps DMPv2 capability on the wire.
+    match client.publish_identity(true).await {
         Ok(()) => Ok(MaybeRepublishResult::Republished),
         Err(e) => Ok(MaybeRepublishResult::Failed {
             reason: e.to_string(),
