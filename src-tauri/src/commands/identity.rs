@@ -537,6 +537,65 @@ pub async fn is_identity_published(state: State<'_, AppState>) -> CommandResult<
     }
 }
 
+/// Outcome of a background re-publish attempt driven by the desktop's
+/// unlock + 24h heartbeat. The frontend treats `Failed` as a transient
+/// hiccup, not a user-facing error — that's why it's an `Ok` variant
+/// rather than a `CommandError`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MaybeRepublishResult {
+    /// Identity TXT was re-pushed to DNS.
+    Republished,
+    /// Nothing to do (no active identity, or no publish/TSIG block).
+    Skipped { reason: RepublishSkipReason },
+    /// The SDK call returned an error. Stored as a string so the
+    /// frontend can log it without re-serializing the SDK's error enum.
+    Failed { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepublishSkipReason {
+    /// No identity is currently unlocked.
+    NotInitialized,
+    /// The active identity has no TSIG block configured, so there is
+    /// nothing the SDK can re-publish.
+    NoPublishConfig,
+}
+
+/// Best-effort re-publish of the active identity's signed DNS record.
+///
+/// Called by the frontend on unlock and every 24h thereafter. The SDK's
+/// `publish_identity()` is idempotent — it overwrites the TXT with a
+/// fresh signature and the same 86_400-second TTL — so the heartbeat
+/// can fire freely without churn.
+///
+/// This command never returns `Err`. Background failures surface as
+/// `MaybeRepublishResult::Failed { reason }` so the heartbeat loop can
+/// log + retry without a blocking modal.
+#[tauri::command]
+pub async fn maybe_republish_identity(
+    state: State<'_, AppState>,
+) -> CommandResult<MaybeRepublishResult> {
+    let guard = state.active.read().await;
+    let Some(active) = guard.as_ref() else {
+        return Ok(MaybeRepublishResult::Skipped {
+            reason: RepublishSkipReason::NotInitialized,
+        });
+    };
+    if !active.publish_configured {
+        return Ok(MaybeRepublishResult::Skipped {
+            reason: RepublishSkipReason::NoPublishConfig,
+        });
+    }
+    match active.client.publish_identity().await {
+        Ok(()) => Ok(MaybeRepublishResult::Republished),
+        Err(e) => Ok(MaybeRepublishResult::Failed {
+            reason: e.to_string(),
+        }),
+    }
+}
+
 /// Switch the active identity. The supplied passphrase unlocks the
 /// requested identity; the previous active client is dropped.
 #[derive(Debug, Clone, Deserialize)]
@@ -596,6 +655,38 @@ mod tests {
         let loaded = state.load_index().unwrap();
         assert_eq!(loaded.identities.len(), 2);
         assert_eq!(loaded.active.as_deref(), Some("bob"));
+    }
+
+    /// Locks the wire shape of [`MaybeRepublishResult`]; the frontend
+    /// switches on `action` to decide whether to log, retry, or stay
+    /// silent.
+    #[test]
+    fn maybe_republish_result_serializes_with_action_tag() {
+        let republished = MaybeRepublishResult::Republished;
+        assert_eq!(
+            serde_json::to_string(&republished).unwrap(),
+            "{\"action\":\"republished\"}",
+        );
+
+        let skipped_no_config = MaybeRepublishResult::Skipped {
+            reason: RepublishSkipReason::NoPublishConfig,
+        };
+        let s = serde_json::to_string(&skipped_no_config).unwrap();
+        assert!(s.contains("\"action\":\"skipped\""), "got {s}");
+        assert!(s.contains("\"reason\":\"no_publish_config\""), "got {s}");
+
+        let skipped_not_init = MaybeRepublishResult::Skipped {
+            reason: RepublishSkipReason::NotInitialized,
+        };
+        let s = serde_json::to_string(&skipped_not_init).unwrap();
+        assert!(s.contains("\"reason\":\"not_initialized\""), "got {s}");
+
+        let failed = MaybeRepublishResult::Failed {
+            reason: "writer rejected RRset".into(),
+        };
+        let s = serde_json::to_string(&failed).unwrap();
+        assert!(s.contains("\"action\":\"failed\""), "got {s}");
+        assert!(s.contains("\"reason\":\"writer rejected RRset\""), "got {s}");
     }
 
     /// Locks the wire shape of [`PublishedStatus`]; the UI switches on

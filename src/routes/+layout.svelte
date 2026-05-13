@@ -47,6 +47,41 @@
     }
   }
 
+  // Identity re-publish heartbeat. Fires once immediately after unlock,
+  // then every 24h. publish_identity() in the SDK is idempotent (writes
+  // a fresh signature over the same TXT name) so unconditional refresh
+  // is safe and keeps alpha testers discoverable across long gaps
+  // between sessions.
+  let republishHandle: ReturnType<typeof setInterval> | null = null;
+  const REPUBLISH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+  async function runRepublish() {
+    try {
+      const res = await api.maybeRepublishIdentity();
+      if (res.action === "failed") {
+        console.warn("[republish] failed:", res.reason);
+      }
+    } catch (err) {
+      console.warn("[republish] threw:", err);
+    }
+  }
+
+  function startRepublishHeartbeat() {
+    if (republishHandle !== null) return;
+    void runRepublish();
+    republishHandle = setInterval(
+      () => void runRepublish(),
+      REPUBLISH_INTERVAL_MS,
+    );
+  }
+
+  function stopRepublishHeartbeat() {
+    if (republishHandle !== null) {
+      clearInterval(republishHandle);
+      republishHandle = null;
+    }
+  }
+
   onMount(async () => {
     await refreshActiveIdentity();
     await reloadList();
@@ -57,6 +92,7 @@
       void refreshContacts();
       void pollInbox();
       startPolling();
+      startRepublishHeartbeat();
     } else if (
       identities.length === 0 &&
       page.url.pathname !== "/identities"
@@ -65,7 +101,10 @@
     }
   });
 
-  onDestroy(() => stopPolling());
+  onDestroy(() => {
+    stopPolling();
+    stopRepublishHeartbeat();
+  });
 
   async function reloadList() {
     try {
@@ -121,6 +160,7 @@
       switchTarget = "";
       identityMenuOpen = false;
       stopPolling();
+      stopRepublishHeartbeat();
       clearInbox();
       clearSent();
       contacts.set([]);
@@ -131,6 +171,7 @@
       void refreshContacts();
       void pollInbox();
       startPolling();
+      startRepublishHeartbeat();
     } catch (err) {
       switchError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -142,6 +183,7 @@
     activeIdentity.set(null);
     publishedStatus.set(null);
     stopPolling();
+    stopRepublishHeartbeat();
     clearInbox();
     clearSent();
     contacts.set([]);

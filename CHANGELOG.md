@@ -15,6 +15,17 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-refresh identity on unlock + 24h heartbeat.** Alpha testers who
+  open the app sporadically were falling out of DNS between sessions —
+  new contacts trying to fetch their address got NXDOMAIN until the
+  user clicked Re-publish. The desktop now fires `publish_identity`
+  once after unlock/switch and again every 24h while the app stays
+  open. Skips silently for identities without a TSIG block; logs
+  transient publish failures to the console without surfacing a modal.
+  (#4)
+
 ## 0.1.0-alpha.6 — 2026-05-06
 
 Network resilience release. Fixes the Android-after-VPN-disconnect lockup

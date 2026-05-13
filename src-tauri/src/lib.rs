@@ -70,6 +70,7 @@ pub fn run() {
             commands::identity::get_identity_config,
             commands::identity::update_publish_config,
             commands::identity::is_identity_published,
+            commands::identity::maybe_republish_identity,
             // contacts
             commands::contacts::list_contacts,
             commands::contacts::add_contact,
