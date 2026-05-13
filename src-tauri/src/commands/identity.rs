@@ -693,7 +693,10 @@ mod tests {
         };
         let s = serde_json::to_string(&failed).unwrap();
         assert!(s.contains("\"action\":\"failed\""), "got {s}");
-        assert!(s.contains("\"reason\":\"writer rejected RRset\""), "got {s}");
+        assert!(
+            s.contains("\"reason\":\"writer rejected RRset\""),
+            "got {s}"
+        );
     }
 
     /// Locks the wire shape of [`PublishedStatus`]; the UI switches on
