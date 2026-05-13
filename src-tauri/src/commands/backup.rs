@@ -551,6 +551,7 @@ mod tests {
                     tsig_secret_path: dir.join(TSIG_FILE),
                 }),
                 kdf_salt_base64: None,
+                claim_via: None,
             }
         } else {
             IdentityConfig::default()

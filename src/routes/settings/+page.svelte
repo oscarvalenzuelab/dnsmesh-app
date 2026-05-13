@@ -42,6 +42,7 @@
   let tsigAlgorithm = $state<string>("hmac-sha256");
   let tsigSecretPath = $state<string>("");
   let resolversText = $state<string>("");
+  let claimViaText = $state<string>("");
 
   // Sent-message retention TTL. Per-identity, localStorage-backed for
   // the proto; promote to a Rust-side setting alongside `sent.jsonl`.
@@ -123,6 +124,7 @@
     pendingSecretBase64 = "";
     registerSuccess = "";
     resolversText = (cfg?.resolvers ?? []).join("\n");
+    claimViaText = (cfg?.claim_via ?? []).join("\n");
     // Network-driven prefill — fire-and-forget. Only fills fields the
     // user hasn't already typed in / hasn't already had hydrated from
     // disk above. See `prefillFromDiscovery` for the policy.
@@ -323,10 +325,17 @@
               tsig_secret_path: tsigSecretPath.trim(),
             }
         : null;
+      const claimVia = claimViaText
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
       const args = {
         username: $activeIdentity.username,
         resolvers: resolvers.length > 0 ? resolvers : null,
         publish: publishBlock,
+        // Always send the current text so clearing the field clears
+        // the config; the backend treats `null` as "preserve prior".
+        claim_via: claimVia,
       };
       cfg = await api.updatePublishConfig(args);
       hydrateForm();
@@ -556,6 +565,21 @@
       <label>
         <span>Resolvers</span>
         <textarea rows="4" bind:value={resolversText}></textarea>
+      </label>
+
+      <p class="muted small">
+        Cross-zone first-contact: one provider zone per line. When set,
+        sends also publish a claim into each zone, and the inbox poll
+        walks each zone for claims addressed to you. Leave blank to
+        disable.
+      </p>
+      <label>
+        <span>Claim-via zones</span>
+        <textarea
+          rows="3"
+          bind:value={claimViaText}
+          placeholder="claims.example.com"
+        ></textarea>
       </label>
 
       <div class="actions">

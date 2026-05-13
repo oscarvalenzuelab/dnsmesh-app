@@ -11,5 +11,6 @@ pub mod contacts;
 pub mod identity;
 pub mod import_cli;
 pub mod inbox;
+pub mod intro;
 pub mod messaging;
 pub mod nodes;

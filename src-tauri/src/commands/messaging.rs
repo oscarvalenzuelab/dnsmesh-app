@@ -49,10 +49,29 @@ pub async fn send_message(
             "recipient_username must not be empty",
         ));
     }
-    let msg_id = active
-        .client
-        .send_message(&args.recipient_username, args.plaintext.as_bytes())
-        .await?;
+    // Route through `send_message_with_claim` when the identity has
+    // configured claim-via provider zones — same delivery path,
+    // plus a per-provider claim publish that lets a recipient
+    // walking the provider zone pick the message up without our
+    // TSIG ever touching their authoritative zone. An empty list
+    // falls back to the plain send, which is what every existing
+    // identity has today.
+    let msg_id = if active.claim_via.is_empty() {
+        active
+            .client
+            .send_message(&args.recipient_username, args.plaintext.as_bytes())
+            .await?
+    } else {
+        let providers: Vec<&str> = active.claim_via.iter().map(String::as_str).collect();
+        active
+            .client
+            .send_message_with_claim(
+                &args.recipient_username,
+                args.plaintext.as_bytes(),
+                &providers,
+            )
+            .await?
+    };
     Ok(SendMessageResult {
         msg_id_hex: hex::encode(msg_id),
     })
@@ -61,7 +80,10 @@ pub async fn send_message(
 /// One decrypted inbox row. Plaintext is surfaced as both lossy UTF-8
 /// (for display) and raw bytes (so binary payloads round-trip without
 /// information loss). `sender_signing_pk_hex` is the lookup key
-/// against the pinned contact list.
+/// against the pinned contact list. `sender_label`, when present, is
+/// the SPK-verified `user@host` claim lifted from the inbound DMPv2
+/// envelope — the UI renders it instead of (or alongside) the SPK
+/// hex so first-contact messages show a human-readable name.
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxMessageView {
     pub sender_signing_pk_hex: String,
@@ -69,6 +91,7 @@ pub struct InboxMessageView {
     pub timestamp: u64,
     pub plaintext_utf8: String,
     pub plaintext_bytes: Vec<u8>,
+    pub sender_label: Option<String>,
 }
 
 impl From<InboxMessage> for InboxMessageView {
@@ -80,6 +103,7 @@ impl From<InboxMessage> for InboxMessageView {
             timestamp: m.timestamp,
             plaintext_utf8,
             plaintext_bytes: m.plaintext,
+            sender_label: m.sender_label,
         }
     }
 }
@@ -87,11 +111,31 @@ impl From<InboxMessage> for InboxMessageView {
 /// Pull every reassembled message out of the mailbox slots. Each call
 /// drains everything visible and flips the replay cache, so a second
 /// call returns only what arrived between polls.
+///
+/// When the active identity has configured claim-via provider zones,
+/// we also walk each of them via `receive_via_claim` so cross-zone
+/// first-contact messages (which land at the provider zone instead
+/// of our authoritative zone) show up in the same call. Per-provider
+/// failures are logged via `tracing` and don't abort the merge — a
+/// single provider being down should never block delivery from our
+/// own zone.
 #[tauri::command]
 pub async fn receive_messages(state: State<'_, AppState>) -> CommandResult<Vec<InboxMessageView>> {
     let guard = state.active.read().await;
     let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
-    let messages = active.client.receive_messages().await?;
+    let mut messages = active.client.receive_messages().await?;
+    for provider in &active.claim_via {
+        match active.client.receive_via_claim(provider).await {
+            Ok(mut more) => messages.append(&mut more),
+            Err(e) => {
+                tracing::warn!(
+                    provider = provider.as_str(),
+                    error = %e,
+                    "claim-via receive failed; skipping this provider for the current poll",
+                );
+            }
+        }
+    }
     Ok(messages.into_iter().map(InboxMessageView::from).collect())
 }
 
@@ -355,9 +399,11 @@ mod tests {
             plaintext: b"hello".to_vec(),
             timestamp: 1_700_000_000,
             msg_id: [0xCD; 16],
+            sender_label: Some("alice@mesh.local".to_string()),
         };
         let view: InboxMessageView = m.into();
         assert_eq!(view.sender_signing_pk_hex, "ab".repeat(32));
+        assert_eq!(view.sender_label.as_deref(), Some("alice@mesh.local"));
         assert_eq!(view.msg_id_hex, "cd".repeat(16));
         assert_eq!(view.plaintext_utf8, "hello");
     }

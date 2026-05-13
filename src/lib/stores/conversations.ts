@@ -114,6 +114,24 @@ export const conversations: Readable<Conversation[]> = derived(
           contact,
         );
         bucket.messages.push(inToMessage(row, contact));
+      } else if (row.sender_label) {
+        // Unpinned sender, but the DMPv2 envelope was SPK-verified —
+        // bucket per label so messages from the same first-contact
+        // sender group together. The "Unknown senders" catch-all
+        // stays for v1 (no envelope) or envelope-without-trust
+        // cases.
+        const label = row.sender_label;
+        const at = label.indexOf("@");
+        const username = at > 0 ? label.slice(0, at) : label;
+        const domain = at > 0 ? label.slice(at + 1) : null;
+        const bucket = ensureBucket(
+          `label:${label.toLowerCase()}`,
+          label,
+          username,
+          domain,
+          null,
+        );
+        bucket.messages.push(inToMessage(row, null));
       } else {
         const bucket = ensureBucket(
           UNKNOWN_KEY,
