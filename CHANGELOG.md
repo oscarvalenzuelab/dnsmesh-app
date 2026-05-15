@@ -15,8 +15,31 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] — 2026-05-15 — Intro queue UI + claim-via + sender labels
+
+Lands the desktop side of the cross-zone first-contact campaign. SDK
+pinned at `sdk-v0.1.2` for the DMPv2 envelope wire bits.
+
 ### Added
 
+- **Intro queue UI** at `/intro`. Lists pending first-contact
+  messages with the SPK-verified `sender_label` (or a truncated SPK
+  hex when the envelope was absent), plaintext preview, and three
+  actions: Accept (deliver, no pin), Trust (deliver + pin contact),
+  Block (drop + denylist). Trust modal pre-fills the address from
+  the verified envelope and the SDK re-resolves the IdentityRecord
+  before any contact pin lands. (#3, #18)
+- **Claim-via configuration** in Settings — repeatable list of
+  provider zones for cross-zone first-contact. Non-empty config
+  routes sends through `send_message_with_claim` and adds a
+  `receive_via_claim` walk per zone to every poll. (#3, #18)
+- **Verified sender labels** in the inbox. Unpinned senders with a
+  SPK-verified envelope now group into per-label conversations
+  instead of the generic "Unknown senders" pile; pinned contacts
+  unchanged. (#2, #18)
+- Identity publish always advertises DMPv2 capability (`versions =
+  [1, 2]`) so v2-aware peers can reach this client with a verified
+  envelope. (#18)
 - **Auto-refresh identity on unlock + 24h heartbeat.** Alpha testers who
   open the app sporadically were falling out of DNS between sessions —
   new contacts trying to fetch their address got NXDOMAIN until the
@@ -24,7 +47,14 @@ breaking wire-format changes there will be reflected here.
   once after unlock/switch and again every 24h while the app stays
   open. Skips silently for identities without a TSIG block; logs
   transient publish failures to the console without surfacing a modal.
-  (#4)
+  (#4, #17)
+
+### Changed
+
+- `InboxMessageView` and `PersistedInboxMessage` carry the new
+  `sender_label` field. Existing `inbox.jsonl` rows deserialise as
+  `None` via `#[serde(default)]` and progressively gain labels as
+  new messages land. (#2, #18)
 
 ## 0.1.0-alpha.6 — 2026-05-06
 

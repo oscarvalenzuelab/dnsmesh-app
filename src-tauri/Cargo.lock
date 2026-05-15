@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-app"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "dnsmesh-core",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "dnsmesh-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dnsmesh-core",
  "hex",
