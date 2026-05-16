@@ -14,6 +14,25 @@ use dnsmesh_core::manifest::SlotManifest;
 use crate::error::{CommandError, CommandResult};
 use crate::state::{AppState, build_reader};
 
+/// Build the provider-zone list passed to the SDK's
+/// `send_message_with_claim`. Always includes the sender's own zone so
+/// a receiver walking us via their `claim_via` configuration discovers
+/// the message; preserves whatever the user configured beyond that.
+/// Deduped — an already-configured own-zone is not added twice.
+///
+/// The manifest + chunks `send_message` writes always land in
+/// `self.domain` (the sender's zone), not the recipient's. Without an
+/// own-zone claim record a receiver walking us via `receive_via_claim`
+/// has no concrete record to find — cross-zone first-contact silently
+/// fails. Adding the own-zone claim unconditionally closes that loop.
+fn build_send_provider_list(configured: &[String], own_zone: &str) -> Vec<String> {
+    let mut out: Vec<String> = configured.to_vec();
+    if !out.iter().any(|z| z == own_zone) {
+        out.push(own_zone.to_string());
+    }
+    out
+}
+
 /// Args for [`send_message`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendMessageArgs {
@@ -49,29 +68,20 @@ pub async fn send_message(
             "recipient_username must not be empty",
         ));
     }
-    // Route through `send_message_with_claim` when the identity has
-    // configured claim-via provider zones — same delivery path,
-    // plus a per-provider claim publish that lets a recipient
-    // walking the provider zone pick the message up without our
-    // TSIG ever touching their authoritative zone. An empty list
-    // falls back to the plain send, which is what every existing
-    // identity has today.
-    let msg_id = if active.claim_via.is_empty() {
-        active
-            .client
-            .send_message(&args.recipient_username, args.plaintext.as_bytes())
-            .await?
-    } else {
-        let providers: Vec<&str> = active.claim_via.iter().map(String::as_str).collect();
-        active
-            .client
-            .send_message_with_claim(
-                &args.recipient_username,
-                args.plaintext.as_bytes(),
-                &providers,
-            )
-            .await?
-    };
+    // Always route through `send_message_with_claim` — see
+    // `build_send_provider_list` for the own-zone-always rationale.
+    // Same-zone sends pay a redundant own-zone claim that the
+    // receiver's replay cache dedupes; cheaper than branching.
+    let provider_zones = build_send_provider_list(&active.claim_via, &active.domain);
+    let providers: Vec<&str> = provider_zones.iter().map(String::as_str).collect();
+    let msg_id = active
+        .client
+        .send_message_with_claim(
+            &args.recipient_username,
+            args.plaintext.as_bytes(),
+            &providers,
+        )
+        .await?;
     Ok(SendMessageResult {
         msg_id_hex: hex::encode(msg_id),
     })
@@ -448,6 +458,41 @@ mod tests {
         ] {
             assert!(s.contains(needle), "expected {needle:?} in {s}");
         }
+    }
+
+    /// Provider list with no user-configured claim_via must still
+    /// carry the sender's own zone — the change that makes cross-zone
+    /// first-contact work without manual setup.
+    #[test]
+    fn build_send_provider_list_empty_configured_adds_own_zone() {
+        let out = build_send_provider_list(&[], "dmp.dnsmesh.io");
+        assert_eq!(out, vec!["dmp.dnsmesh.io".to_string()]);
+    }
+
+    /// Own zone already in the configured list — don't double-add.
+    /// Same-zone sends with the federation defaults populated could
+    /// hit this when the user's zone happens to match a default.
+    #[test]
+    fn build_send_provider_list_own_zone_already_present_is_no_op() {
+        let configured = vec!["dmp.dnsmesh.io".to_string(), "dmp.dnsmesh.de".to_string()];
+        let out = build_send_provider_list(&configured, "dmp.dnsmesh.io");
+        assert_eq!(out, configured);
+    }
+
+    /// Configured zones that don't include the own zone get the own
+    /// zone appended; relative ordering of configured zones preserved.
+    #[test]
+    fn build_send_provider_list_appends_own_zone_when_missing() {
+        let configured = vec!["dmp.dnsmesh.de".to_string(), "dmp.dnsmesh.pro".to_string()];
+        let out = build_send_provider_list(&configured, "dmp.dnsmesh.io");
+        assert_eq!(
+            out,
+            vec![
+                "dmp.dnsmesh.de".to_string(),
+                "dmp.dnsmesh.pro".to_string(),
+                "dmp.dnsmesh.io".to_string(),
+            ],
+        );
     }
 
     /// Decision strings drive the per-manifest status badge in the

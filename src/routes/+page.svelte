@@ -13,6 +13,7 @@
   } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
   import { appendSent, removeSentByRecipient } from "$lib/stores/sent";
+  import { introCount } from "$lib/stores/intros";
   import {
     conversations,
     type ChatMessage,
@@ -31,6 +32,12 @@
   let sending = $state<boolean>(false);
   let sendError = $state<string>("");
   let replyTo = $state<ChatMessage | null>(null);
+  // Address to offer one-click pinning for when the reply fails with
+  // `contact_not_found`. Set by `send()` when the active conversation
+  // has a verified envelope (so we know who to pin); cleared on any
+  // successful send, conversation switch, or manual pin click.
+  let pinPromptAddress = $state<string | null>(null);
+  let pinning = $state<boolean>(false);
 
   // Picker state for "+ New chat".
   let pickerOpen = $state<boolean>(false);
@@ -231,6 +238,7 @@
     activeKey = key;
     replyTo = null;
     sendError = "";
+    pinPromptAddress = null;
     // Don't carry per-thread overflow state across a switch — a
     // half-armed "Yes, clear" from chat A would otherwise act on
     // chat B once it became active.
@@ -318,14 +326,56 @@
       void pollInbox();
       draft = "";
       replyTo = null;
+      pinPromptAddress = null;
     } catch (err) {
       if (isCommandError(err) && err.kind === "contact_not_found") {
-        sendError = `No pinned contact named "${recipient}". Add them from + New chat.`;
+        // Conversation opened from an accepted (not trusted) intro:
+        // the message is in our inbox but the sender isn't pinned, so
+        // the SDK refuses to look up their prekeys for a reply. When
+        // the active conversation has both a username and a domain
+        // (i.e. it came from a verified DMPv2 envelope), offer a
+        // one-click pin-and-retry. Trust would do the same plus
+        // re-deliver the original intro, which is moot here since
+        // it's already in inbox.
+        if (activeConversation?.username && activeConversation.domain) {
+          pinPromptAddress = `${activeConversation.username}@${activeConversation.domain}`;
+          sendError = `${activeConversation.username} isn't a pinned contact yet — pin them to reply.`;
+        } else {
+          sendError = `No pinned contact named "${recipient}". Add them from + New chat.`;
+        }
       } else {
         sendError = isCommandError(err) ? err.message : String(err);
       }
     } finally {
       sending = false;
+    }
+  }
+
+  async function pinAndRetry() {
+    if (!pinPromptAddress) return;
+    pinning = true;
+    sendError = "";
+    try {
+      // Pre-compute the post-pin conversation key. Before pinning,
+      // the thread is bucketed at `label:user@host`. After
+      // refreshContacts() the conversations store re-derives and
+      // moves it to the username-lowercased key. activeKey doesn't
+      // self-update, so without this nudge `send()` resolves
+      // activeConversation to null and bails with "Pick a contact".
+      const at = pinPromptAddress.indexOf("@");
+      const postPinKey =
+        at > 0
+          ? pinPromptAddress.slice(0, at).toLowerCase()
+          : pinPromptAddress.toLowerCase();
+      await api.fetchAndAddContact(pinPromptAddress);
+      await refreshContacts();
+      activeKey = postPinKey;
+      pinPromptAddress = null;
+      await send();
+    } catch (err) {
+      sendError = isCommandError(err) ? err.message : String(err);
+    } finally {
+      pinning = false;
     }
   }
 
@@ -491,6 +541,20 @@
             title="New chat"
           >+ New chat</button>
         </div>
+        {#if $introCount > 0}
+          <button
+            type="button"
+            class="intro-banner"
+            onclick={() => goto("/intro")}
+          >
+            <span class="intro-banner-count">{$introCount}</span>
+            <span class="intro-banner-text">
+              {$introCount === 1
+                ? "1 message from a new sender — review →"
+                : `${$introCount} messages from new senders — review →`}
+            </span>
+          </button>
+        {/if}
         {#if $inboxError}
           <p class="error small inline-msg">{$inboxError}</p>
         {/if}
@@ -662,7 +726,19 @@
                 </div>
               {/if}
               {#if sendError}
-                <p class="error small inline-msg">{sendError}</p>
+                <div class="send-error-row">
+                  <p class="error small inline-msg">{sendError}</p>
+                  {#if pinPromptAddress}
+                    <button
+                      type="button"
+                      class="primary pin-retry"
+                      onclick={pinAndRetry}
+                      disabled={pinning}
+                    >
+                      {pinning ? "Pinning…" : `Pin ${pinPromptAddress} and reply`}
+                    </button>
+                  {/if}
+                </div>
               {/if}
               <div class="composer-row">
                 <div class="emoji-wrap">
@@ -1204,6 +1280,66 @@
   }
   .inline-msg {
     margin: 0;
+  }
+  .send-error-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
+  }
+  .send-error-row .inline-msg {
+    flex: 1;
+    min-width: 0;
+  }
+  .pin-retry {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 0.35em 0.7em;
+    min-height: 32px;
+  }
+  .intro-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.65rem 0.85rem;
+    margin: 0 0 0.5rem;
+    background: var(--accent-softer);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .intro-banner:hover {
+    background: var(--accent-soft);
+  }
+  .intro-banner-count {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 12px;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .intro-banner-text {
+    font-size: 13px;
+    line-height: 1.3;
+    font-weight: 500;
   }
 
   .picker-backdrop {
