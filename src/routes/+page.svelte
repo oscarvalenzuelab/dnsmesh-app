@@ -32,6 +32,12 @@
   let sending = $state<boolean>(false);
   let sendError = $state<string>("");
   let replyTo = $state<ChatMessage | null>(null);
+  // Address to offer one-click pinning for when the reply fails with
+  // `contact_not_found`. Set by `send()` when the active conversation
+  // has a verified envelope (so we know who to pin); cleared on any
+  // successful send, conversation switch, or manual pin click.
+  let pinPromptAddress = $state<string | null>(null);
+  let pinning = $state<boolean>(false);
 
   // Picker state for "+ New chat".
   let pickerOpen = $state<boolean>(false);
@@ -232,6 +238,7 @@
     activeKey = key;
     replyTo = null;
     sendError = "";
+    pinPromptAddress = null;
     // Don't carry per-thread overflow state across a switch — a
     // half-armed "Yes, clear" from chat A would otherwise act on
     // chat B once it became active.
@@ -319,14 +326,44 @@
       void pollInbox();
       draft = "";
       replyTo = null;
+      pinPromptAddress = null;
     } catch (err) {
       if (isCommandError(err) && err.kind === "contact_not_found") {
-        sendError = `No pinned contact named "${recipient}". Add them from + New chat.`;
+        // Conversation opened from an accepted (not trusted) intro:
+        // the message is in our inbox but the sender isn't pinned, so
+        // the SDK refuses to look up their prekeys for a reply. When
+        // the active conversation has both a username and a domain
+        // (i.e. it came from a verified DMPv2 envelope), offer a
+        // one-click pin-and-retry. Trust would do the same plus
+        // re-deliver the original intro, which is moot here since
+        // it's already in inbox.
+        if (activeConversation?.username && activeConversation.domain) {
+          pinPromptAddress = `${activeConversation.username}@${activeConversation.domain}`;
+          sendError = `${activeConversation.username} isn't a pinned contact yet — pin them to reply.`;
+        } else {
+          sendError = `No pinned contact named "${recipient}". Add them from + New chat.`;
+        }
       } else {
         sendError = isCommandError(err) ? err.message : String(err);
       }
     } finally {
       sending = false;
+    }
+  }
+
+  async function pinAndRetry() {
+    if (!pinPromptAddress) return;
+    pinning = true;
+    sendError = "";
+    try {
+      await api.fetchAndAddContact(pinPromptAddress);
+      await refreshContacts();
+      pinPromptAddress = null;
+      await send();
+    } catch (err) {
+      sendError = isCommandError(err) ? err.message : String(err);
+    } finally {
+      pinning = false;
     }
   }
 
@@ -677,7 +714,19 @@
                 </div>
               {/if}
               {#if sendError}
-                <p class="error small inline-msg">{sendError}</p>
+                <div class="send-error-row">
+                  <p class="error small inline-msg">{sendError}</p>
+                  {#if pinPromptAddress}
+                    <button
+                      type="button"
+                      class="primary pin-retry"
+                      onclick={pinAndRetry}
+                      disabled={pinning}
+                    >
+                      {pinning ? "Pinning…" : `Pin ${pinPromptAddress} and reply`}
+                    </button>
+                  {/if}
+                </div>
               {/if}
               <div class="composer-row">
                 <div class="emoji-wrap">
@@ -1219,6 +1268,27 @@
   }
   .inline-msg {
     margin: 0;
+  }
+  .send-error-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
+  }
+  .send-error-row .inline-msg {
+    flex: 1;
+    min-width: 0;
+  }
+  .pin-retry {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 0.35em 0.7em;
+    min-height: 32px;
   }
   .intro-banner {
     display: flex;
