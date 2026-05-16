@@ -15,21 +15,20 @@ export const introCount = derived(intros, ($i) => $i.length);
 // Refresh the in-memory list from the backend. Identity-change-mid-flight
 // guard mirrors the inbox/sent stores so a stale identity's intros never
 // clobber the new identity's freshly-loaded list.
+//
+// Errors propagate to the caller. The `/intro` page surfaces them inline
+// in `listError`; the background poller in `+layout.svelte` calls this
+// through a `.catch()` that logs + drops, so a transient backend hiccup
+// in the badge refresh doesn't block the inbox poll.
 export async function refreshIntros(): Promise<void> {
   const identityAtStart = get(activeIdentity)?.username ?? null;
   if (identityAtStart === null) {
     intros.set([]);
     return;
   }
-  try {
-    const rows = await api.introList();
-    if (get(activeIdentity)?.username !== identityAtStart) return;
-    intros.set(rows);
-  } catch (err) {
-    // Refresh failures are non-fatal — the badge falls back to whatever
-    // count was last known good. /intro itself surfaces the error inline.
-    console.warn("intro refresh failed", err);
-  }
+  const rows = await api.introList();
+  if (get(activeIdentity)?.username !== identityAtStart) return;
+  intros.set(rows);
 }
 
 // Drop the in-memory list on lock so a stale count doesn't bleed across
