@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { activeIdentity } from "$lib/stores/identity";
   import { hydrateInbox } from "$lib/stores/inbox";
   import { refreshContacts } from "$lib/stores/contacts";
@@ -68,10 +69,16 @@
   async function doAccept(intro: IntroView) {
     clearRow(intro.intro_id);
     setRowBusy(intro.intro_id, true);
+    // Snapshot identity so a late accept doesn't mutate a different
+    // identity's badge if the user switches/locks mid-flight. The
+    // intros store is shared with the topbar — same race the inbox
+    // store guards against.
+    const identityAtStart = get(activeIdentity)?.username ?? null;
     try {
       // intro_accept persists the message to disk in the same Tauri
       // call, so we only need to refresh the in-memory inbox here.
       const delivered = await api.introAccept(intro.intro_id);
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       if (!delivered) {
         setRowError(
           intro.intro_id,
@@ -81,8 +88,10 @@
         return;
       }
       await hydrateInbox();
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       intros.update((rows) => rows.filter((i) => i.intro_id !== intro.intro_id));
     } catch (err) {
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       setRowError(
         intro.intro_id,
         isCommandError(err) ? err.message : String(err),
@@ -114,18 +123,22 @@
     clearRow(intro_id);
     setRowBusy(intro_id, true);
     trustPrompt = null;
+    const identityAtStart = get(activeIdentity)?.username ?? null;
     try {
       // intro_trust persists the message to disk in the same Tauri
       // call (same atomicity reasoning as intro_accept).
       const delivered = await api.introTrust(intro_id, trimmed);
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       if (!delivered) {
         setRowError(intro_id, "intro already taken");
         await refresh();
         return;
       }
       await Promise.all([hydrateInbox(), refreshContacts()]);
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       intros.update((rows) => rows.filter((i) => i.intro_id !== intro_id));
     } catch (err) {
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       setRowError(
         intro_id,
         isCommandError(err) ? err.message : String(err),
@@ -145,10 +158,13 @@
     clearRow(intro_id);
     setRowBusy(intro_id, true);
     blockPrompt = null;
+    const identityAtStart = get(activeIdentity)?.username ?? null;
     try {
       await api.introBlock(intro_id, note);
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       intros.update((rows) => rows.filter((i) => i.intro_id !== intro_id));
     } catch (err) {
+      if (get(activeIdentity)?.username !== identityAtStart) return;
       setRowError(
         intro_id,
         isCommandError(err) ? err.message : String(err),
