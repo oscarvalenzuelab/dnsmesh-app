@@ -15,6 +15,71 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] — 2026-05-15 — First-contact UX completion
+
+Closes the cross-zone first-contact UX gap end-to-end. Surfaced
+during a live end-to-end test against the three production
+federation zones: a stranger on `dmp.dnsmesh.io` sending to a
+freshly-installed identity on `dmp.dnsmesh.de` previously failed
+silently. With this release, the message arrives, lights up a
+badge on the receiver's inbox, and a one-click "Pin and reply"
+turns the conversation into a normal pinned contact.
+
+SDK pin unchanged (`sdk-v0.1.2`) — these are desktop-side fixes
+on top of the existing SDK surface.
+
+### Added
+
+- **Intro badge + inbox banner.** Brand-new `intros` store mirrors
+  the SDK's pending-quarantine list, derived `introCount`. The
+  overflow menu's **Intros** entry shows a numeric badge; the
+  hamburger button shows a small dot when count > 0. The sidebar
+  on `/` renders a click-through banner ("N messages from new
+  senders — review →") that links straight to `/intro`. Per-poll
+  `refreshIntros()` alongside `pollInbox()` keeps the count
+  current. (#22)
+- **Default `claim_via` on fresh identities.** New identities
+  created in this version get `claim_via` seeded with the public
+  federation zones (`dmp.dnsmesh.io`, `dmp.dnsmesh.de`,
+  `dmp.dnsmesh.pro`, minus the own zone). Without this, cross-zone
+  first-contact couldn't work out of the box — the receive-side
+  `receive_via_claim` walk never fired. Existing identities are
+  not modified; users edit their list in Settings → Claim-via
+  zones. (#22)
+- **One-click "Pin and reply".** When replying to an accepted
+  (but not trusted) intro fails with `contact_not_found`, the
+  chat view now offers a "Pin <addr> and reply" button alongside
+  the error. It calls `fetch_and_add_contact` to resolve the SPK
+  via DNS, refreshes contacts, updates `activeKey` to the
+  post-pin bucket, and retries the send. v1 (no envelope) or
+  envelope-not-verified senders keep getting the prior error
+  pointing at + New chat. (#22)
+
+### Changed
+
+- **Send always includes the sender's own zone in claim-via.**
+  Manifest + chunks already land in our own zone, but without an
+  own-zone claim record a receiver walking us via the new
+  `claim_via` default has nothing concrete to discover. The send
+  command now always routes through `send_message_with_claim`
+  with `self.domain` in the provider list (deduped against any
+  user-configured zones). Same-zone sends pay a redundant own-zone
+  claim that the receiver's replay cache dedupes. (#22)
+- **Inbox polling driven by an `$effect` on `$activeIdentity`.**
+  Folds inbox polling, per-identity store hydration, the initial
+  fresh poll, and cleanup into the same effect that already
+  drove the 24h re-publish heartbeat. The previous imperative
+  setup in `onMount` + `submitSwitch` + `onDestroy` never ran on
+  the Identities-page unlock path, leaving newly-unlocked
+  identities with no auto-refreshing inbox until the user
+  re-locked and unlocked from the topbar. (#19, #20)
+
+### Fixed
+
+- Accept/trust/block on `/intro` now guard against mid-flight
+  identity switches; a late SDK response from one identity can no
+  longer mutate the now-active identity's badge or intro list.
+
 ## [0.1.0-alpha.7] — 2026-05-15 — Intro queue UI + claim-via + sender labels
 
 Lands the desktop side of the cross-zone first-contact campaign. SDK
