@@ -12,6 +12,7 @@
   import { clearInbox, hydrateInbox, pollInbox } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
   import { clearSent, hydrateSent } from "$lib/stores/sent";
+  import { clearIntros, introCount, refreshIntros } from "$lib/stores/intros";
   import {
     api,
     isCommandError,
@@ -37,7 +38,7 @@
   function startPolling() {
     if (pollHandle !== null) return;
     pollHandle = setInterval(() => {
-      void pollInbox();
+      void pollInbox().then(() => refreshIntros());
     }, POLL_INTERVAL_MS);
   }
 
@@ -112,13 +113,14 @@
     hydrateSent(ident.username);
     void hydrateInbox();
     void refreshContacts();
-    void pollInbox();
+    void pollInbox().then(() => refreshIntros());
     startPolling();
     startRepublishHeartbeat();
     return () => {
       stopPolling();
       clearInbox();
       clearSent();
+      clearIntros();
       contacts.set([]);
       stopRepublishHeartbeat();
     };
@@ -344,15 +346,23 @@
           onclick={toggleOverflow}
           aria-haspopup="true"
           aria-expanded={overflowOpen}
-          aria-label="Open menu"
+          aria-label={$introCount > 0 ? `Open menu (${$introCount} pending intros)` : "Open menu"}
           title="Menu"
         >
           ☰
+          {#if $introCount > 0}
+            <span class="hamburger-dot" aria-hidden="true"></span>
+          {/if}
         </button>
         {#if overflowOpen}
           <div class="menu overflow-menu" role="menu">
             <button type="button" class="overflow-item" onclick={() => navTo("/")}>Chat</button>
-            <button type="button" class="overflow-item" onclick={() => navTo("/intro")}>Intros</button>
+            <button type="button" class="overflow-item intros-item" onclick={() => navTo("/intro")}>
+              <span>Intros</span>
+              {#if $introCount > 0}
+                <span class="intro-badge" aria-label={`${$introCount} pending`}>{$introCount}</span>
+              {/if}
+            </button>
             <button type="button" class="overflow-item" onclick={() => navTo("/contacts")}>Contacts</button>
             <button type="button" class="overflow-item" onclick={() => navTo("/identities")}>Identities</button>
             <button type="button" class="overflow-item" onclick={() => navTo("/settings")}>Settings</button>
@@ -670,6 +680,37 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    position: relative;
+  }
+  .hamburger-dot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--surface);
+  }
+  .intros-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+  }
+  .intro-badge {
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
   }
   .menu {
     position: absolute;

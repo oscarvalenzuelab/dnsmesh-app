@@ -49,29 +49,34 @@ pub async fn send_message(
             "recipient_username must not be empty",
         ));
     }
-    // Route through `send_message_with_claim` when the identity has
-    // configured claim-via provider zones — same delivery path,
-    // plus a per-provider claim publish that lets a recipient
-    // walking the provider zone pick the message up without our
-    // TSIG ever touching their authoritative zone. An empty list
-    // falls back to the plain send, which is what every existing
-    // identity has today.
-    let msg_id = if active.claim_via.is_empty() {
-        active
-            .client
-            .send_message(&args.recipient_username, args.plaintext.as_bytes())
-            .await?
-    } else {
-        let providers: Vec<&str> = active.claim_via.iter().map(String::as_str).collect();
-        active
-            .client
-            .send_message_with_claim(
-                &args.recipient_username,
-                args.plaintext.as_bytes(),
-                &providers,
-            )
-            .await?
-    };
+    // Always route through `send_message_with_claim` with the sender's
+    // own zone included in the provider list, plus whatever the user
+    // configured.
+    //
+    // The manifest + chunks already land in our own zone (`send_message`
+    // publishes into `self.domain`, not the recipient's), so for a
+    // cross-zone send the receiver can only discover us if they walk
+    // our zone — which they do iff our zone is in their `claim_via`
+    // list. The own-zone claim record gives that walk something
+    // explicit to find. Without this, cross-zone first-contact
+    // silently failed: the manifest publish to the recipient's slot
+    // worked (it's our own zone, our TSIG covers it) but the receiver
+    // had no signal pointing at it. Same-zone sends still work — the
+    // claim record is redundant with the manifest the receiver's
+    // own-zone walk already picks up, and the replay cache dedupes.
+    let mut provider_zones: Vec<String> = active.claim_via.clone();
+    if !provider_zones.iter().any(|z| z == &active.domain) {
+        provider_zones.push(active.domain.clone());
+    }
+    let providers: Vec<&str> = provider_zones.iter().map(String::as_str).collect();
+    let msg_id = active
+        .client
+        .send_message_with_claim(
+            &args.recipient_username,
+            args.plaintext.as_bytes(),
+            &providers,
+        )
+        .await?;
     Ok(SendMessageResult {
         msg_id_hex: hex::encode(msg_id),
     })

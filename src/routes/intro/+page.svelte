@@ -3,9 +3,9 @@
   import { activeIdentity } from "$lib/stores/identity";
   import { hydrateInbox } from "$lib/stores/inbox";
   import { refreshContacts } from "$lib/stores/contacts";
+  import { intros, refreshIntros } from "$lib/stores/intros";
   import { api, isCommandError, type IntroView } from "$lib/api";
 
-  let intros = $state<IntroView[]>([]);
   let loading = $state<boolean>(false);
   let listError = $state<string>("");
 
@@ -32,12 +32,12 @@
   async function refresh() {
     listError = "";
     if (!$activeIdentity) {
-      intros = [];
+      intros.set([]);
       return;
     }
     loading = true;
     try {
-      intros = await api.introList();
+      await refreshIntros();
     } catch (err) {
       listError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -81,7 +81,7 @@
         return;
       }
       await hydrateInbox();
-      intros = intros.filter((i) => i.intro_id !== intro.intro_id);
+      intros.update((rows) => rows.filter((i) => i.intro_id !== intro.intro_id));
     } catch (err) {
       setRowError(
         intro.intro_id,
@@ -124,7 +124,7 @@
         return;
       }
       await Promise.all([hydrateInbox(), refreshContacts()]);
-      intros = intros.filter((i) => i.intro_id !== intro_id);
+      intros.update((rows) => rows.filter((i) => i.intro_id !== intro_id));
     } catch (err) {
       setRowError(
         intro_id,
@@ -147,7 +147,7 @@
     blockPrompt = null;
     try {
       await api.introBlock(intro_id, note);
-      intros = intros.filter((i) => i.intro_id !== intro_id);
+      intros.update((rows) => rows.filter((i) => i.intro_id !== intro_id));
     } catch (err) {
       setRowError(
         intro_id,
@@ -195,11 +195,11 @@
 
   {#if !$activeIdentity}
     <p class="empty">Unlock an identity to see pending intros.</p>
-  {:else if intros.length === 0 && !loading}
+  {:else if $intros.length === 0 && !loading}
     <p class="empty">No pending intros.</p>
   {:else}
     <ul class="intro-list">
-      {#each intros as intro (intro.intro_id)}
+      {#each $intros as intro (intro.intro_id)}
         <li class="intro-row">
           <header class="row-head">
             <div class="who">
