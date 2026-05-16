@@ -13,6 +13,7 @@
   } from "$lib/stores/inbox";
   import { contacts, refreshContacts } from "$lib/stores/contacts";
   import { appendSent, removeSentByRecipient } from "$lib/stores/sent";
+  import { introCount } from "$lib/stores/intros";
   import {
     conversations,
     type ChatMessage,
@@ -491,6 +492,20 @@
             title="New chat"
           >+ New chat</button>
         </div>
+        {#if $introCount > 0}
+          <button
+            type="button"
+            class="intro-banner"
+            onclick={() => goto("/intro")}
+          >
+            <span class="intro-banner-count">{$introCount}</span>
+            <span class="intro-banner-text">
+              {$introCount === 1
+                ? "1 message from a new sender — review →"
+                : `${$introCount} messages from new senders — review →`}
+            </span>
+          </button>
+        {/if}
         {#if $inboxError}
           <p class="error small inline-msg">{$inboxError}</p>
         {/if}
@@ -1204,6 +1219,45 @@
   }
   .inline-msg {
     margin: 0;
+  }
+  .intro-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    padding: 0.65rem 0.85rem;
+    margin: 0 0 0.5rem;
+    background: var(--accent-softer);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .intro-banner:hover {
+    background: var(--accent-soft);
+  }
+  .intro-banner-count {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 12px;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .intro-banner-text {
+    font-size: 13px;
+    line-height: 1.3;
+    font-weight: 500;
   }
 
   .picker-backdrop {

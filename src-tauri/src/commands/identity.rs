@@ -26,6 +26,46 @@ const KDF_SALT_BYTES: usize = 16;
 /// pinned to this value so the same passphrase keeps unlocking them.
 const SDK_DEFAULT_KDF_SALT: &[u8] = dnsmesh_core::DEFAULT_ARGON2_SALT;
 
+/// Federation zones a brand-new identity opts into walking on receive.
+///
+/// Cross-zone first-contact needs the receiver to walk the sender's
+/// home zone (the `receive_via_claim` path), otherwise a claim record
+/// the sender publishes there never gets discovered. Out of the box
+/// we seed every new identity with the public federation zones so a
+/// stranger sending from any of them lands in the receiver's intro
+/// queue. Users can edit the list in Settings → Claim-via zones.
+const DEFAULT_CLAIM_VIA_ZONES: &[&str] = &["dmp.dnsmesh.io", "dmp.dnsmesh.de", "dmp.dnsmesh.pro"];
+
+/// Populate `cfg.claim_via` with the federation defaults for a brand-new
+/// identity. No-op when the user already has a value (including an empty
+/// list — that's a deliberate "walk nothing" choice we won't overwrite).
+/// Existing identities created before this default shipped are left
+/// alone; they can opt in via Settings.
+fn ensure_default_claim_via(
+    cfg: &mut IdentityConfig,
+    state: &AppState,
+    username: &str,
+    own_domain: &str,
+) -> CommandResult<()> {
+    if cfg.claim_via.is_some() {
+        return Ok(());
+    }
+    let db_path = state.identity_db_path(username);
+    if db_path.exists() {
+        return Ok(());
+    }
+    let zones: Vec<String> = DEFAULT_CLAIM_VIA_ZONES
+        .iter()
+        .filter(|z| **z != own_domain)
+        .map(|z| (*z).to_string())
+        .collect();
+    cfg.claim_via = Some(zones);
+    state
+        .save_identity_config(username, cfg)
+        .map_err(CommandError::from)?;
+    Ok(())
+}
+
 /// Read or generate the per-identity KDF salt. Persists the result so
 /// subsequent unlocks don't need to re-detect.
 fn ensure_kdf_salt(
@@ -159,6 +199,7 @@ pub async fn init_or_unlock(
         .map_err(CommandError::from)?;
 
     let kdf_salt = ensure_kdf_salt(&mut cfg, &state, &username)?;
+    ensure_default_claim_via(&mut cfg, &state, &username, &domain)?;
 
     let inner_reader = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
     let refreshable_reader = Arc::new(RefreshableReader::new(inner_reader));
