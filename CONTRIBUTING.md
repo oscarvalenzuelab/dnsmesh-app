@@ -130,6 +130,56 @@ which is the standard Tauri 2 IPC origin. `frame-ancestors 'none'`
 plus `object-src 'none'` shut down clickjacking / plugin embedding
 respectively.
 
+## Android release signing (stable alpha keystore)
+
+Android refuses to upgrade an APK whose signing certificate doesn't
+match the one already installed (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+and falling back to "uninstall first" wipes user identities, contacts,
+and inbox.
+
+For sideload upgrades to work across alpha releases, the
+`release-android.yml` workflow signs every APK with a stable debug
+keystore stored as the `ANDROID_DEBUG_KEYSTORE_B64` repo secret. If
+the secret is missing the workflow falls back to an ephemeral keystore
+and warns loudly — useful for PR / fork builds, broken for releases.
+
+To provision (one-time, by a repo admin):
+
+```sh
+# 1. Generate the keystore locally. The credentials below are the
+#    well-known public Android debug values — DO NOT use these for a
+#    production signing keystore. This is an alpha-phase stopgap.
+keytool -genkeypair -v -keystore alpha-debug.keystore \
+  -storepass android -alias androiddebugkey -keypass android \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=DNSMesh Alpha Debug,O=DNSMesh,C=US"
+
+# 2. Base64-encode (single line; macOS `base64` already emits one).
+base64 -i alpha-debug.keystore | tr -d '\n' > alpha-debug.keystore.b64
+
+# 3. Paste the file contents as a new repo secret named
+#    ANDROID_DEBUG_KEYSTORE_B64 under
+#    https://github.com/oscarvalenzuelab/dnsmesh-app/settings/secrets/actions
+
+# 4. Stash the original `alpha-debug.keystore` somewhere safe (password
+#    manager, vault). Re-creating it would change the SHA-256
+#    fingerprint and break upgrades for everyone who already installed
+#    an APK signed by the previous one. Wipe the local copy from disk
+#    once stashed:
+shred -u alpha-debug.keystore alpha-debug.keystore.b64
+```
+
+To verify the secret works after provisioning, re-run the
+`release-android` workflow against a previous tag and check the log
+for `Using ANDROID_DEBUG_KEYSTORE_B64 secret` + the printed SHA-256
+fingerprint.
+
+When the alpha graduates and a real signing keystore exists, replace
+the value of `ANDROID_DEBUG_KEYSTORE_B64` with the production keystore
+and tighten the passphrase handling in `release-android.yml` (the
+current hard-coded `pass:android` is fine for the well-known debug
+identity but not for a real signing key).
+
 ## Code style
 
 - `cargo fmt --all` for Rust; SvelteKit code follows the project's
