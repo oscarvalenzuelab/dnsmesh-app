@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
@@ -95,32 +95,46 @@
     }
   }
 
+  // Drives every per-identity side effect from the $activeIdentity store:
+  // hydrate per-identity disk-backed stores, fire one fresh poll, schedule
+  // the periodic inbox poll, run the 24h re-publish heartbeat, and clean
+  // up on lock / switch / component destroy.
+  //
+  // Lifecycle-hook-driven setup misses the Identities-page unlock path,
+  // which flips $activeIdentity via refreshActiveIdentity() but never
+  // reaches topbar code. The republish heartbeat hit the same trap
+  // historically and was switched to this pattern; the inbox polling
+  // and store hydration are now folded into the same effect so all
+  // per-identity work has one source of truth.
   $effect(() => {
-    if ($activeIdentity) {
-      startRepublishHeartbeat();
-    }
-    return () => stopRepublishHeartbeat();
+    const ident = $activeIdentity;
+    if (!ident) return;
+    hydrateSent(ident.username);
+    void hydrateInbox();
+    void refreshContacts();
+    void pollInbox();
+    startPolling();
+    startRepublishHeartbeat();
+    return () => {
+      stopPolling();
+      clearInbox();
+      clearSent();
+      contacts.set([]);
+      stopRepublishHeartbeat();
+    };
   });
 
   onMount(async () => {
     await refreshActiveIdentity();
     await reloadList();
-    const ident = get(activeIdentity);
-    if (ident) {
-      hydrateSent(ident.username);
-      void hydrateInbox();
-      void refreshContacts();
-      void pollInbox();
-      startPolling();
-    } else if (
+    if (
+      !get(activeIdentity) &&
       identities.length === 0 &&
       page.url.pathname !== "/identities"
     ) {
       void goto("/identities?onboarding=1", { replaceState: true });
     }
   });
-
-  onDestroy(() => stopPolling());
 
   async function reloadList() {
     try {
@@ -172,20 +186,10 @@
     try {
       await api.switchIdentity(switchTarget, switchPassphrase);
       switchPassphrase = "";
-      const target = switchTarget;
       switchTarget = "";
       identityMenuOpen = false;
-      stopPolling();
-      clearInbox();
-      clearSent();
-      contacts.set([]);
       await refreshActiveIdentity();
       await reloadList();
-      hydrateSent(target);
-      void hydrateInbox();
-      void refreshContacts();
-      void pollInbox();
-      startPolling();
     } catch (err) {
       switchError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -196,10 +200,6 @@
   async function lock() {
     activeIdentity.set(null);
     publishedStatus.set(null);
-    stopPolling();
-    clearInbox();
-    clearSent();
-    contacts.set([]);
     closeMenus();
     switchTarget = "";
     switchPassphrase = "";
