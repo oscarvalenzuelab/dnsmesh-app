@@ -356,8 +356,20 @@
     pinning = true;
     sendError = "";
     try {
+      // Pre-compute the post-pin conversation key. Before pinning,
+      // the thread is bucketed at `label:user@host`. After
+      // refreshContacts() the conversations store re-derives and
+      // moves it to the username-lowercased key. activeKey doesn't
+      // self-update, so without this nudge `send()` resolves
+      // activeConversation to null and bails with "Pick a contact".
+      const at = pinPromptAddress.indexOf("@");
+      const postPinKey =
+        at > 0
+          ? pinPromptAddress.slice(0, at).toLowerCase()
+          : pinPromptAddress.toLowerCase();
       await api.fetchAndAddContact(pinPromptAddress);
       await refreshContacts();
+      activeKey = postPinKey;
       pinPromptAddress = null;
       await send();
     } catch (err) {
