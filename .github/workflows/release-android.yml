@@ -297,20 +297,65 @@ jobs:
         # `cargo tauri android build --apk` produces unsigned release
         # APKs, which Android refuses to install
         # (INSTALL_PARSE_FAILED_NO_CERTIFICATES). Sign with the debug
-        # keystore so sideloads at least install. Same alpha policy as
-        # the unsigned macOS / Windows builds: install with friction,
-        # not Play Store-trusted. Promote to a real signing keystore
-        # via secrets when one is wired up.
+        # keystore so sideloads at least install.
+        #
+        # Stable fingerprint across releases (issue #12). The pre-fix
+        # behaviour was to `keytool -genkeypair` afresh per run, which
+        # produced a different SHA-256 every release. Android refuses
+        # to upgrade an APK whose signing certificate changed
+        # (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so every alpha bump
+        # forced users to uninstall — wiping identities, contacts, and
+        # inbox.
+        #
+        # Fix: a stable alpha-channel debug keystore is provisioned
+        # once as the `ANDROID_DEBUG_KEYSTORE_B64` repo secret
+        # (passphrase still the well-known public `android`, alias
+        # still `androiddebugkey`). The workflow decodes it per run.
+        # The keystore identity holds across every release until it's
+        # rotated, so consecutive APKs upgrade in place.
+        #
+        # PR / fork builds (no secret access) fall back to generating
+        # a throwaway keystore on the fly. Those APKs still install
+        # standalone, they just can't upgrade an APK signed by the
+        # real alpha keystore — which is fine: PR builds aren't
+        # release artefacts.
+        #
+        # Once the alpha graduates and a real signing keystore is
+        # available, swap `ANDROID_DEBUG_KEYSTORE_B64` for the
+        # production keystore and tighten passphrase handling.
+        # Same alpha policy as the unsigned macOS / Windows builds:
+        # install with friction, not Play Store-trusted.
         shell: bash
+        env:
+          ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
           DEBUG_KS="$RUNNER_TEMP/debug.keystore"
-          # Generate the debug keystore on the fly so we don't depend on
-          # a runner-provided ~/.android setup. Credentials are the
-          # well-known public Android debug values.
-          keytool -genkeypair -v -keystore "$DEBUG_KS" -storepass android \
-            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-            -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "${ANDROID_DEBUG_KEYSTORE_B64:-}" ]; then
+            echo "Using ANDROID_DEBUG_KEYSTORE_B64 secret (stable alpha keystore)"
+            # `base64 -d` rejects whitespace on macOS / BSD but tolerates
+            # it on Linux; the GH Actions secret pipe preserves the
+            # surrounding newline from `pbcopy`-style provisioning, so
+            # strip whitespace before decode for portability.
+            printf '%s' "$ANDROID_DEBUG_KEYSTORE_B64" | tr -d '[:space:]' \
+              | base64 -d > "$DEBUG_KS"
+            if [ ! -s "$DEBUG_KS" ]; then
+              echo "::error::ANDROID_DEBUG_KEYSTORE_B64 decoded to an empty file — check the secret value"
+              exit 1
+            fi
+            # Smoke-check: keytool can list the alias. Fingerprint is
+            # logged so a fingerprint change between releases is
+            # immediately visible in the workflow log.
+            keytool -list -v -keystore "$DEBUG_KS" -storepass android \
+              -alias androiddebugkey 2>&1 | grep -E "SHA-?256|Owner" || true
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 secret not set — falling back to an ephemeral debug keystore."
+            echo "::warning::The resulting APK will NOT be installable as an upgrade over previously-released signed builds."
+            echo "::warning::For release builds, provision the ANDROID_DEBUG_KEYSTORE_B64 secret (see CONTRIBUTING.md or docs/android-signing.md)."
+            keytool -genkeypair -v -keystore "$DEBUG_KS" -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
           # apksigner ships in build-tools; setup-android pins one but
           # doesn't put it on PATH, so resolve it explicitly. Guard
