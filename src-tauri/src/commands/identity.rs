@@ -828,4 +828,91 @@ mod tests {
             .collect();
         assert!(summaries.iter().all(|s| !s.is_active));
     }
+
+    /// Fresh identity (no sqlite file yet, no claim_via key in config)
+    /// should be seeded with the federation defaults minus its own
+    /// zone, persisted to disk so the next unlock sees the same list.
+    #[test]
+    fn ensure_default_claim_via_seeds_fresh_identity() {
+        let (state, _dir) = make_test_state();
+        let username = "alice";
+        std::fs::create_dir_all(state.identity_dir(username)).unwrap();
+        let mut cfg = IdentityConfig::default();
+        assert!(cfg.claim_via.is_none());
+
+        ensure_default_claim_via(&mut cfg, &state, username, "dmp.dnsmesh.io").unwrap();
+
+        let zones = cfg.claim_via.as_ref().expect("claim_via must be populated");
+        assert_eq!(
+            zones,
+            &vec!["dmp.dnsmesh.de".to_string(), "dmp.dnsmesh.pro".to_string()]
+        );
+        let reloaded = state.load_identity_config(username).unwrap();
+        assert_eq!(
+            reloaded.claim_via.as_deref(),
+            Some(zones.as_slice()),
+            "fresh-identity default must round-trip through config.yaml",
+        );
+    }
+
+    /// Own domain not in the federation default list leaves the list
+    /// intact (no spurious filtering).
+    #[test]
+    fn ensure_default_claim_via_self_hosted_zone_keeps_full_list() {
+        let (state, _dir) = make_test_state();
+        let username = "alice";
+        std::fs::create_dir_all(state.identity_dir(username)).unwrap();
+        let mut cfg = IdentityConfig::default();
+
+        ensure_default_claim_via(&mut cfg, &state, username, "my.example.com").unwrap();
+
+        let zones = cfg.claim_via.as_ref().unwrap();
+        assert_eq!(zones.len(), DEFAULT_CLAIM_VIA_ZONES.len());
+        for z in DEFAULT_CLAIM_VIA_ZONES {
+            assert!(zones.iter().any(|s| s == z), "missing zone {z}");
+        }
+    }
+
+    /// A claim_via value already set by the user (even an explicit
+    /// empty list) is a deliberate choice — never overwrite it.
+    #[test]
+    fn ensure_default_claim_via_respects_existing_value() {
+        let (state, _dir) = make_test_state();
+        let username = "alice";
+        std::fs::create_dir_all(state.identity_dir(username)).unwrap();
+
+        for prior in [vec![], vec!["custom.zone.example".to_string()]] {
+            let mut cfg = IdentityConfig {
+                claim_via: Some(prior.clone()),
+                ..IdentityConfig::default()
+            };
+            ensure_default_claim_via(&mut cfg, &state, username, "dmp.dnsmesh.io").unwrap();
+            assert_eq!(
+                cfg.claim_via.as_ref().unwrap(),
+                &prior,
+                "existing claim_via must not be overwritten",
+            );
+        }
+    }
+
+    /// Identity with an existing sqlite file is a pre-default-shipping
+    /// user. Don't backfill — they may have removed the value on
+    /// purpose, and silently re-seeding from one app version to the
+    /// next would surprise them.
+    #[test]
+    fn ensure_default_claim_via_skips_existing_identities() {
+        let (state, _dir) = make_test_state();
+        let username = "alice";
+        std::fs::create_dir_all(state.identity_dir(username)).unwrap();
+        // Touch the sqlite path so the existence check trips.
+        std::fs::write(state.identity_db_path(username), b"").unwrap();
+        let mut cfg = IdentityConfig::default();
+
+        ensure_default_claim_via(&mut cfg, &state, username, "dmp.dnsmesh.io").unwrap();
+
+        assert!(
+            cfg.claim_via.is_none(),
+            "existing identity must not get a backfilled claim_via",
+        );
+    }
 }
