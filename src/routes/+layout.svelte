@@ -38,7 +38,14 @@
   function startPolling() {
     if (pollHandle !== null) return;
     pollHandle = setInterval(() => {
-      void pollInbox().then(() => refreshIntros());
+      void pollInbox().then(() =>
+        refreshIntros().catch((err) => {
+          // Background badge refresh failures are non-fatal — log,
+          // keep last-known-good count. Foreground /intro refresh
+          // surfaces the same error in `listError` via its own try.
+          console.warn("intro background refresh failed", err);
+        }),
+      );
     }, POLL_INTERVAL_MS);
   }
 
@@ -113,7 +120,11 @@
     hydrateSent(ident.username);
     void hydrateInbox();
     void refreshContacts();
-    void pollInbox().then(() => refreshIntros());
+    void pollInbox().then(() =>
+      refreshIntros().catch((err) => {
+        console.warn("intro initial refresh failed", err);
+      }),
+    );
     startPolling();
     startRepublishHeartbeat();
     return () => {
