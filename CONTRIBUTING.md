@@ -174,6 +174,17 @@ To verify the secret works after provisioning, re-run the
 for `Using ANDROID_DEBUG_KEYSTORE_B64 secret` + the printed SHA-256
 fingerprint.
 
+When the secret is missing, the workflow **fails by default** rather
+than silently shipping a fresh-fingerprint APK that would force every
+user to uninstall + reinstall (wiping their data). For PR / fork /
+local-experiment runs that genuinely cannot read the secret, dispatch
+the workflow manually with `allow_ephemeral_signing=true` — the APK
+will build, install standalone on a fresh device, and emit warnings
+about not being upgrade-compatible. **Never set
+`allow_ephemeral_signing=true` from the orchestrating `release.yml`**;
+that path is reserved for tagged release runs and must hard-fail on
+a missing secret.
+
 When the alpha graduates and a real signing keystore exists, replace
 the value of `ANDROID_DEBUG_KEYSTORE_B64` with the production keystore
 and tighten the passphrase handling in `release-android.yml` (the

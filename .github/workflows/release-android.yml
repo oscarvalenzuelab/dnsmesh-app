@@ -29,6 +29,21 @@ on:
         required: false
         type: string
         default: ""
+      allow_ephemeral_signing:
+        description: >-
+          When ``ANDROID_DEBUG_KEYSTORE_B64`` is missing, fall back to
+          a throwaway debug keystore instead of failing the job. The
+          fallback APK has a fresh signing fingerprint, so users
+          CANNOT upgrade from a previous release in place — they have
+          to uninstall first, which wipes identities, contacts, and
+          inbox. Only set ``true`` for PR / fork builds (where the
+          secret isn't available) or local experiments. The
+          orchestrating release.yml leaves this at ``false`` so a
+          missing-secret incident fails loudly instead of silently
+          shipping a broken upgrade path.
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       tag:
@@ -40,6 +55,11 @@ on:
         required: false
         type: string
         default: ""
+      allow_ephemeral_signing:
+        description: "Allow ephemeral keystore fallback when ANDROID_DEBUG_KEYSTORE_B64 is missing. Breaks sideload upgrades — only for PR/fork/local builds."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -328,6 +348,7 @@ jobs:
         shell: bash
         env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+          ALLOW_EPHEMERAL_SIGNING: ${{ inputs.allow_ephemeral_signing }}
         run: |
           set -euo pipefail
           DEBUG_KS="$RUNNER_TEMP/debug.keystore"
@@ -345,13 +366,29 @@ jobs:
             fi
             # Smoke-check: keytool can list the alias. Fingerprint is
             # logged so a fingerprint change between releases is
-            # immediately visible in the workflow log.
+            # immediately visible in the workflow log. Scoped to
+            # `SHA-?256` only (drop `Owner`) so the workflow log
+            # surface stays minimal.
             keytool -list -v -keystore "$DEBUG_KS" -storepass android \
-              -alias androiddebugkey 2>&1 | grep -E "SHA-?256|Owner" || true
+              -alias androiddebugkey 2>&1 | grep -E "SHA-?256" || true
           else
-            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 secret not set — falling back to an ephemeral debug keystore."
-            echo "::warning::The resulting APK will NOT be installable as an upgrade over previously-released signed builds."
-            echo "::warning::For release builds, provision the ANDROID_DEBUG_KEYSTORE_B64 secret (see CONTRIBUTING.md or docs/android-signing.md)."
+            # Secret missing. Default behaviour: hard fail. A release
+            # tag silently shipping with a fresh-fingerprint APK is
+            # exactly the bug this whole change set is fixing — the
+            # workflow must NOT pretend the resulting APK is a real
+            # release. Only the orchestrating release.yml passes
+            # ``allow_ephemeral_signing: false`` (the default); PR /
+            # fork / local-experiment runs can opt in via
+            # ``workflow_dispatch`` if they need the build to proceed.
+            if [ "${ALLOW_EPHEMERAL_SIGNING:-false}" != "true" ]; then
+              echo "::error::ANDROID_DEBUG_KEYSTORE_B64 secret is not set."
+              echo "::error::Refusing to publish a release APK with an ephemeral keystore — its fingerprint would not match prior releases, breaking sideload upgrades."
+              echo "::error::Provision the secret (see CONTRIBUTING.md → 'Android release signing'), or re-run via workflow_dispatch with allow_ephemeral_signing=true if this is a PR / fork / experiment build."
+              exit 1
+            fi
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 secret not set, falling back to an ephemeral debug keystore (allow_ephemeral_signing=true)."
+            echo "::warning::The resulting APK will NOT be installable as an upgrade over previously-released signed builds — uninstall + reinstall would be required, wiping user data."
+            echo "::warning::This is only safe for PR / fork / local-experiment builds; never for a real release."
             keytool -genkeypair -v -keystore "$DEBUG_KS" -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
               -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
