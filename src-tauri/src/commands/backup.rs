@@ -74,17 +74,46 @@ pub struct ExportResult {
 }
 
 /// Build the tar.gz in-memory and write atomically via a sibling .tmp.
+///
+/// Requires the target identity to be the currently-unlocked one. The
+/// archive carries `tsig.key` and the persisted message history in the
+/// clear, so exporting is a privileged read: without this gate the command
+/// hands out any indexed identity's secrets on the strength of a username
+/// alone. The frontend already gated its own affordance on the active
+/// identity; this makes the backend enforce it rather than trusting the UI.
 #[tauri::command]
 pub async fn export_identity_backup(
     args: ExportArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<ExportResult> {
-    do_export(args, &state)
+    let active_username = {
+        let guard = state.active.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(CommandError::not_initialized)?
+            .username
+            .clone()
+    };
+    do_export(args, &state, &active_username)
 }
 
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
-fn do_export(args: ExportArgs, state: &AppState) -> CommandResult<ExportResult> {
+fn do_export(
+    args: ExportArgs,
+    state: &AppState,
+    active_username: &str,
+) -> CommandResult<ExportResult> {
     let username = sanitize_username(&args.username)?;
+
+    if username != active_username {
+        return Err(CommandError::new(
+            "validation",
+            format!(
+                "can only export the unlocked identity; `{active_username}` is \
+                 active but `{username}` was requested"
+            ),
+        ));
+    }
 
     let index = state.load_index().map_err(CommandError::from)?;
     let entry = index
@@ -576,6 +605,35 @@ mod tests {
         state.save_index(&idx).unwrap();
     }
 
+    /// The archive carries `tsig.key` and the persisted message history in
+    /// the clear, so export must not honour an arbitrary username just
+    /// because it appears in the index.
+    #[test]
+    fn export_refuses_an_identity_that_is_not_the_active_one() {
+        let (src_state, _src_root) = fresh_state();
+        let out_dir = TempDir::new().unwrap();
+        seed_identity(&src_state, "alice", "mesh.local", true, true);
+        seed_identity(&src_state, "bob", "mesh.local", true, true);
+
+        // "bob" is unlocked; asking for "alice" must fail.
+        let err = do_export(
+            ExportArgs {
+                username: "alice".into(),
+                output_path: out_dir.path().join("alice"),
+            },
+            &src_state,
+            "bob",
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, "validation", "got {err:?}");
+
+        // Nothing was written.
+        assert!(
+            std::fs::read_dir(out_dir.path()).unwrap().next().is_none(),
+            "export produced output despite failing",
+        );
+    }
+
     #[test]
     fn export_then_import_round_trip_into_new_username() {
         let (src_state, _src_root) = fresh_state();
@@ -589,6 +647,7 @@ mod tests {
                 output_path: archive.clone(),
             },
             &src_state,
+            "alice",
         )
         .unwrap();
 
@@ -652,6 +711,7 @@ mod tests {
                 output_path: out_dir.path().join("alice"),
             },
             &src_state,
+            "alice",
         )
         .unwrap();
 
@@ -706,6 +766,7 @@ mod tests {
                 output_path: out_dir.path().join("alice"),
             },
             &src_state,
+            "alice",
         )
         .unwrap();
 
@@ -748,6 +809,7 @@ mod tests {
                 output_path: out_dir.path().join("alice"),
             },
             &src_state,
+            "alice",
         )
         .unwrap();
 
