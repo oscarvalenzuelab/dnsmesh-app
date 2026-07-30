@@ -62,6 +62,15 @@ flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# `test` brings in tauri's mock runtime, which lets the end-to-end tests
+# build a real App with managed state and call the actual #[tauri::command]
+# functions instead of re-implementing their bodies.
+tauri = { version = "2", features = ["test"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Used only to forge a pre-encryption database in the end-to-end tests.
+# Feature unification makes this the same SQLCipher-linked build the SDK
+# uses, so opening with no key yields a genuine plaintext file.
+rusqlite = "0.32"
 
 [lints.rust]
 unsafe_code = "forbid"
