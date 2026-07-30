@@ -161,6 +161,26 @@ jobs:
         # `gen/android/` and remove this step.
         run: cargo tauri android init
 
+      - name: Point OpenSSL's build at the NDK's llvm-ranlib
+        # dnsmesh-storage links SQLCipher with vendored OpenSSL, and
+        # OpenSSL's build system invokes `<triple>-ranlib`. NDK r23+ dropped
+        # those per-triple shims in favour of a single `llvm-ranlib`, so
+        # without this every ABI fails at `make install_dev` with
+        # `aarch64-linux-android-ranlib: command not found`.
+        #
+        # AR is set alongside it for the same reason. The linker and CC come
+        # from Tauri's own Android plumbing, so they are left alone.
+        run: |
+          NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$NDK_BIN/llvm-ranlib" || {
+            echo "llvm-ranlib not found under $NDK_BIN" >&2
+            exit 1
+          }
+          for t in aarch64_linux_android armv7_linux_androideabi i686_linux_android x86_64_linux_android; do
+            echo "RANLIB_${t}=$NDK_BIN/llvm-ranlib" >> "$GITHUB_ENV"
+            echo "AR_${t}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          done
+
       - name: Build APK (release, all ABIs)
         run: cargo tauri android build --apk
 

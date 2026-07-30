@@ -161,7 +161,10 @@ pub async fn delete_contact(
         ));
     }
     let db_path = state.identity_db_path(&active.username);
-    let db = OpenedDb::open(&db_path).map_err(|e| {
+    // Second connection to the same SQLCipher file — the client owns its own
+    // handles and exposes no remove-contact path. Keyed from the unlocked
+    // client so we don't re-derive (or worse, re-prompt for) the passphrase.
+    let db = OpenedDb::open(&db_path, active.client.storage_key().as_ref()).map_err(|e| {
         CommandError::new(
             "storage",
             format!(
