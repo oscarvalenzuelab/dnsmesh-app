@@ -166,6 +166,7 @@
     } else {
       switchTarget = "";
       switchPassphrase = "";
+      switchNeedsPinConfirm = false;
     }
   }
 
@@ -183,9 +184,16 @@
     switchTarget = username;
     switchPassphrase = "";
     switchError = "";
+    switchNeedsPinConfirm = false;
   }
 
-  async function submitSwitch() {
+  // Mirrors the Identities page: set when the backend reports
+  // `verifier_unpinned` for an identity that predates passphrase
+  // verification. Without a confirm affordance here this menu would be a
+  // dead end for those identities — the backend requires the opt-in.
+  let switchNeedsPinConfirm = $state<boolean>(false);
+
+  async function submitSwitch(confirmPinVerifier = false) {
     if (!switchTarget) {
       switchError = "Pick an identity.";
       return;
@@ -197,14 +205,29 @@
     switchBusy = true;
     switchError = "";
     try {
-      await api.switchIdentity(switchTarget, switchPassphrase);
+      await api.switchIdentity(
+        switchTarget,
+        switchPassphrase,
+        confirmPinVerifier,
+      );
       switchPassphrase = "";
       switchTarget = "";
+      switchNeedsPinConfirm = false;
       identityMenuOpen = false;
       await refreshActiveIdentity();
       await reloadList();
     } catch (err) {
-      switchError = isCommandError(err) ? err.message : String(err);
+      if (isCommandError(err) && err.kind === "wrong_passphrase") {
+        switchError = "Wrong passphrase.";
+        switchPassphrase = "";
+        switchNeedsPinConfirm = false;
+      } else if (isCommandError(err) && err.kind === "verifier_unpinned") {
+        switchError = "";
+        switchNeedsPinConfirm = true;
+      } else {
+        switchError = isCommandError(err) ? err.message : String(err);
+        switchNeedsPinConfirm = false;
+      }
     } finally {
       switchBusy = false;
     }
@@ -216,6 +239,7 @@
     closeMenus();
     switchTarget = "";
     switchPassphrase = "";
+    switchNeedsPinConfirm = false;
 
     void goto("/", { replaceState: false });
 
@@ -315,16 +339,41 @@
                     {#if switchError}
                       <p class="error small">{switchError}</p>
                     {/if}
+                    {#if switchNeedsPinConfirm}
+                      <p class="warn small">
+                        {switchTarget} predates passphrase verification, so
+                        there's nothing to check this passphrase against yet.
+                        Confirm it's correct and it will be recorded as this
+                        identity's verifier. If you're not sure, cancel —
+                        recording the wrong one would pin the wrong keys.
+                      </p>
+                    {/if}
                     <div class="menu-actions">
-                      <button class="primary" type="submit" disabled={switchBusy}>
-                        {switchBusy ? "Opening…" : "Open"}
-                      </button>
+                      {#if switchNeedsPinConfirm}
+                        <button
+                          class="primary"
+                          type="button"
+                          disabled={switchBusy}
+                          onclick={() => submitSwitch(true)}
+                        >
+                          {switchBusy ? "Opening…" : "Confirm and open"}
+                        </button>
+                      {:else}
+                        <button
+                          class="primary"
+                          type="submit"
+                          disabled={switchBusy}
+                        >
+                          {switchBusy ? "Opening…" : "Open"}
+                        </button>
+                      {/if}
                       <button
                         type="button"
                         onclick={() => {
                           switchTarget = "";
                           switchPassphrase = "";
                           switchError = "";
+                          switchNeedsPinConfirm = false;
                         }}
                         disabled={switchBusy}
                       >
