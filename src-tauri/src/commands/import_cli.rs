@@ -287,6 +287,11 @@ fn do_import(args: ImportFromCliArgs, state: &AppState) -> CommandResult<ImportF
         resolvers: cli.resolvers,
         publish,
         kdf_salt_base64,
+        // The CLI has no verifier concept, so an imported identity
+        // starts unpinned and gets its verifier on first unlock, behind
+        // the same confirmation prompt as any other pre-verifier
+        // identity. We can't pin here — import never sees a passphrase.
+        verifier_spk_hex: None,
         // CLI imports never carry claim-via — that lives in the
         // desktop config, not the CLI's config.yaml. Set the
         // settings page after import if the user wants providers.

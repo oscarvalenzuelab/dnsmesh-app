@@ -608,14 +608,22 @@
     info = "";
     switchTargetUsername = username;
     switchPassphrase = "";
+    switchNeedsPinConfirm = false;
   }
 
   function cancelSwitch() {
     switchTargetUsername = "";
     switchPassphrase = "";
+    switchNeedsPinConfirm = false;
   }
 
-  async function submitSwitch() {
+  // Set when the backend reports `verifier_unpinned`: the identity
+  // predates passphrase verification, so there is nothing to check the
+  // typed passphrase against. We ask the user to confirm rather than
+  // pinning a possible typo as the identity's permanent verifier.
+  let switchNeedsPinConfirm = $state<boolean>(false);
+
+  async function submitSwitch(confirmPinVerifier = false) {
     error = "";
     info = "";
     if (!switchTargetUsername) {
@@ -631,10 +639,12 @@
       const result = await api.switchIdentity(
         switchTargetUsername,
         switchPassphrase,
+        confirmPinVerifier,
       );
       info = `ACTIVE. ${result.username}@${result.domain}.`;
       switchPassphrase = "";
       switchTargetUsername = "";
+      switchNeedsPinConfirm = false;
       clearInbox();
       clearSent();
       contacts.set([]);
@@ -646,7 +656,21 @@
         void refreshContacts();
       }
     } catch (err) {
-      error = isCommandError(err) ? err.message : String(err);
+      if (isCommandError(err) && err.kind === "wrong_passphrase") {
+        // Distinct from "identity not found" — the identity is there, the
+        // passphrase isn't right. Keep the form open so the user can retry.
+        error = "Wrong passphrase.";
+        switchPassphrase = "";
+        switchNeedsPinConfirm = false;
+      } else if (isCommandError(err) && err.kind === "verifier_unpinned") {
+        // Nothing on disk can tell us whether what was typed is correct,
+        // so hand the decision to the user instead of guessing.
+        error = "";
+        switchNeedsPinConfirm = true;
+      } else {
+        error = isCommandError(err) ? err.message : String(err);
+        switchNeedsPinConfirm = false;
+      }
     } finally {
       busy = false;
     }
@@ -920,10 +944,35 @@
                       autocomplete="current-password"
                     />
                   </label>
+                  {#if switchNeedsPinConfirm}
+                    <p class="warn small">
+                      <strong>{ident.username}</strong> was created before
+                      passphrase verification, so there's nothing on disk to
+                      check this passphrase against yet. Confirm it's the right
+                      one and it will be recorded as this identity's verifier —
+                      after that, a wrong passphrase is rejected.
+                    </p>
+                    <p class="warn small">
+                      If you're not certain, cancel. Recording the wrong
+                      passphrase would pin the wrong keys and, when publishing
+                      is configured, overwrite this identity's DNS record.
+                    </p>
+                  {/if}
                   <div class="actions">
-                    <button class="primary" type="submit" disabled={busy}>
-                      {busy ? "Opening…" : "Open"}
-                    </button>
+                    {#if switchNeedsPinConfirm}
+                      <button
+                        class="primary"
+                        type="button"
+                        disabled={busy}
+                        onclick={() => submitSwitch(true)}
+                      >
+                        {busy ? "Opening…" : "Confirm and open"}
+                      </button>
+                    {:else}
+                      <button class="primary" type="submit" disabled={busy}>
+                        {busy ? "Opening…" : "Open"}
+                      </button>
+                    {/if}
                     <button type="button" disabled={busy} onclick={cancelSwitch}>
                       Cancel
                     </button>

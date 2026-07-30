@@ -63,6 +63,12 @@ export interface InitOrUnlockArgs {
   passphrase: string;
   /** Required only on first creation. */
   domain?: string;
+  /**
+   * Record a passphrase verifier for an identity created before
+   * verification shipped. Only consulted when the identity exists on disk
+   * and has no verifier yet; it cannot override one already pinned.
+   */
+  confirm_pin_verifier?: boolean;
 }
 
 export interface RefreshPrekeysArgs {
@@ -129,11 +135,23 @@ export const api = {
   refreshPrekeys: (args: RefreshPrekeysArgs): Promise<RefreshPrekeysResult> =>
     invoke("refresh_prekeys", { args }),
   listIdentities: (): Promise<IdentitySummary[]> => invoke("list_identities"),
+  // `confirmPinVerifier` is only for identities created before passphrase
+  // verification shipped: the first unlock of one fails with
+  // `verifier_unpinned`, and the caller re-submits with this set once the
+  // user has confirmed the passphrase is the correct one. It cannot
+  // override an already-pinned verifier.
   switchIdentity: (
     username: string,
     passphrase: string,
+    confirmPinVerifier = false,
   ): Promise<IdentityInfo> =>
-    invoke("switch_identity", { args: { username, passphrase } }),
+    invoke("switch_identity", {
+      args: {
+        username,
+        passphrase,
+        confirm_pin_verifier: confirmPinVerifier,
+      },
+    }),
   lockIdentity: (): Promise<void> => invoke("lock_identity"),
   getIdentityConfig: (username: string): Promise<IdentityConfigView> =>
     invoke("get_identity_config", { username }),

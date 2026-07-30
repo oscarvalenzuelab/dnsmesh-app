@@ -123,6 +123,22 @@ pub struct IdentityConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_salt_base64: Option<String>,
 
+    /// Passphrase verifier: hex-encoded Ed25519 signing public key of
+    /// the identity this passphrase derives. Compared on every unlock so
+    /// a wrong passphrase is rejected instead of silently deriving a
+    /// different keypair under the same username.
+    ///
+    /// Safe to persist in the clear — it is a public key, published to
+    /// DNS in the identity record anyway. Nothing here allows recovering
+    /// the passphrase, so the "no recovery" property is unchanged.
+    ///
+    /// `None` on identities created before verifiers shipped; those are
+    /// pinned on first unlock, but only against an explicit caller
+    /// confirmation (see `confirm_pin_verifier`) so a typo can't pin the
+    /// wrong key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier_spk_hex: Option<String>,
+
     /// Cross-zone claim discovery zones. When non-empty, send paths
     /// publish a `ClaimRecord` into each listed zone (mirrors the
     /// CLI's `--claim-via PROVIDER_ZONE`) so a recipient whose poll
@@ -475,12 +491,14 @@ mod tests {
                 tsig_secret_path: PathBuf::from("tsig.key"),
             }),
             kdf_salt_base64: None,
+            verifier_spk_hex: Some("ab".repeat(32)),
             claim_via: Some(vec!["claims.example.com".into()]),
         };
         state.save_identity_config("alice", &cfg).unwrap();
         let loaded = state.load_identity_config("alice").unwrap();
         assert_eq!(loaded.resolvers.as_ref().unwrap().len(), 1);
         assert!(loaded.publish.is_some());
+        assert_eq!(loaded.verifier_spk_hex, Some("ab".repeat(32)));
         assert_eq!(
             loaded.claim_via.as_deref(),
             Some(&["claims.example.com".to_string()][..]),
