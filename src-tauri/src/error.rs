@@ -15,7 +15,8 @@ pub struct CommandError {
     /// Stable kind string the UI switches on. One of: `validation`,
     /// `not_initialized`, `publish_unconfigured`, `invalid_config`,
     /// `contact_not_found`, `no_record_found`, `verify_failed`,
-    /// `publish_failed`, `io`, `net`, `config`, `internal`, `sdk`.
+    /// `publish_failed`, `wrong_passphrase`, `verifier_unpinned`, `io`,
+    /// `net`, `config`, `internal`, `sdk`.
     pub kind: String,
     /// Human-readable message. Safe to render verbatim.
     pub message: String,

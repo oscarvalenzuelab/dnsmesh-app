@@ -135,6 +135,119 @@ impl IdentityInfo {
     }
 }
 
+/// Constant-time byte equality. The values compared here are public
+/// keys, so this is belt-and-braces rather than a strict requirement —
+/// but an unlock check is exactly the kind of code that shouldn't grow a
+/// data-dependent early return later.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Outcome of checking a derived identity against the stored verifier.
+///
+/// Split out from [`init_or_unlock`] as a pure function so the decision
+/// table is unit-testable — the command itself needs a `tauri::State`,
+/// which isn't constructible in unit tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VerifierDecision {
+    /// Passphrase is good. `pin` carries a verifier to persist when this
+    /// identity didn't have one yet.
+    Accept { pin: Option<String> },
+    /// A verifier is stored and the derived key doesn't match it.
+    WrongPassphrase,
+    /// Pre-verifier identity, and the caller hasn't confirmed that the
+    /// passphrase just typed is the correct one.
+    NeedsConfirmation,
+}
+
+/// Decide what an unlock should do, given the stored verifier and the
+/// identity actually derived from the supplied passphrase.
+fn decide_verifier(
+    stored: Option<&str>,
+    derived_spk_hex: &str,
+    identity_existed: bool,
+    confirm_pin: bool,
+) -> VerifierDecision {
+    match stored {
+        Some(expected) => {
+            if ct_eq(expected.as_bytes(), derived_spk_hex.as_bytes()) {
+                VerifierDecision::Accept { pin: None }
+            } else {
+                VerifierDecision::WrongPassphrase
+            }
+        }
+        // Pre-verifier identity: no local evidence of which passphrase is
+        // correct, so we can't validate — only decline to guess. Pinning
+        // whatever was typed would make a typo permanent and, with a TSIG
+        // block configured, let the unlock heartbeat republish the
+        // identity record under the wrong keypair.
+        None if identity_existed => {
+            if confirm_pin {
+                VerifierDecision::Accept {
+                    pin: Some(derived_spk_hex.to_string()),
+                }
+            } else {
+                VerifierDecision::NeedsConfirmation
+            }
+        }
+        // Brand-new identity: this passphrase defines it, so it's correct
+        // by construction. Pin so later unlocks are checked.
+        None => VerifierDecision::Accept {
+            pin: Some(derived_spk_hex.to_string()),
+        },
+    }
+}
+
+/// Apply [`decide_verifier`] and persist a newly-minted verifier.
+///
+/// `Ok(())` means the passphrase is authenticated and the caller may go on
+/// to publish active state. Every error path is side-effect-free.
+fn enforce_verifier(
+    cfg: &mut IdentityConfig,
+    state: &AppState,
+    username: &str,
+    derived_spk_hex: &str,
+    identity_existed: bool,
+    confirm_pin: bool,
+) -> CommandResult<()> {
+    match decide_verifier(
+        cfg.verifier_spk_hex.as_deref(),
+        derived_spk_hex,
+        identity_existed,
+        confirm_pin,
+    ) {
+        VerifierDecision::WrongPassphrase => Err(CommandError::new(
+            "wrong_passphrase",
+            "wrong passphrase for this identity",
+        )),
+        VerifierDecision::NeedsConfirmation => Err(CommandError::with_details(
+            "verifier_unpinned",
+            "this identity was created before passphrase verification; \
+             confirm the passphrase is correct to record it",
+            serde_json::json!({
+                "username": username,
+                "derived_signing_public_key_hex": derived_spk_hex,
+            }),
+        )),
+        VerifierDecision::Accept { pin } => {
+            if let Some(spk) = pin {
+                cfg.verifier_spk_hex = Some(spk);
+                state
+                    .save_identity_config(username, cfg)
+                    .map_err(CommandError::from)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Args for [`init_or_unlock`].
 ///
 /// `domain` is required the first time we see a username; on subsequent
@@ -146,6 +259,16 @@ pub struct InitOrUnlockArgs {
     /// Mesh zone. Required for first-time creation.
     #[serde(default)]
     pub domain: Option<String>,
+    /// Opt in to pinning a passphrase verifier for a pre-verifier
+    /// identity. Only consulted when the identity exists on disk and has
+    /// no `verifier_spk_hex` yet.
+    ///
+    /// Defaults to false so the safe path is the default: such an unlock
+    /// fails with `verifier_unpinned` rather than silently trusting
+    /// whatever was typed. The UI re-submits with this set once the user
+    /// has confirmed the passphrase is the right one.
+    #[serde(default)]
+    pub confirm_pin_verifier: bool,
 }
 
 /// Open or re-open an identity, replacing whatever was previously active.
@@ -194,6 +317,11 @@ pub async fn init_or_unlock(
     let dir = state.identity_dir(&username);
     std::fs::create_dir_all(&dir).map_err(CommandError::from)?;
     let db_path = state.identity_db_path(&username);
+    // Capture this before anything can create the file — `DmpClient::new`
+    // opens sqlite, which materialises it. Distinguishes "creating a new
+    // identity" (pin a verifier) from "re-opening an existing one"
+    // (check the verifier).
+    let identity_existed = db_path.exists();
     let mut cfg = state
         .load_identity_config(&username)
         .map_err(CommandError::from)?;
@@ -219,6 +347,23 @@ pub async fn init_or_unlock(
         rotation_chain_enabled: false,
     };
     let client = DmpClient::new(client_cfg).await?;
+
+    // Authenticate the passphrase before anything observable happens.
+    //
+    // Argon2id is deterministic, so a wrong passphrase yields a *valid*
+    // but different keypair rather than an error — nothing below this
+    // point can tell the difference. Every early return here leaves
+    // `index.active`, `state.active`, and the publish heartbeat untouched;
+    // the constructed client is dropped. `DmpClient::new` is documented
+    // as network-free, so reaching this check has published nothing.
+    enforce_verifier(
+        &mut cfg,
+        &state,
+        &username,
+        &client.ed25519_signing_public_key_hex(),
+        identity_existed,
+        args.confirm_pin_verifier,
+    )?;
 
     let active = ActiveClient {
         client: Arc::new(client),
@@ -553,6 +698,11 @@ pub async fn update_publish_config(
         resolvers: args.resolvers,
         publish,
         kdf_salt_base64: prior.kdf_salt_base64,
+        // Carried over deliberately: this is a full-config rewrite, and
+        // dropping the verifier here would silently un-protect the
+        // identity on the next unlock every time publish settings are
+        // saved.
+        verifier_spk_hex: prior.verifier_spk_hex,
         claim_via,
     };
     state
@@ -689,6 +839,11 @@ pub async fn maybe_republish_identity(
 pub struct SwitchIdentityArgs {
     pub username: String,
     pub passphrase: String,
+    /// Forwarded to [`InitOrUnlockArgs::confirm_pin_verifier`] — the
+    /// Identities page unlocks pre-verifier identities through here, so
+    /// it needs the same confirmation opt-in.
+    #[serde(default)]
+    pub confirm_pin_verifier: bool,
 }
 
 #[tauri::command]
@@ -701,6 +856,7 @@ pub async fn switch_identity(
             username: args.username,
             passphrase: args.passphrase,
             domain: None,
+            confirm_pin_verifier: args.confirm_pin_verifier,
         },
         state,
     )
@@ -742,6 +898,91 @@ mod tests {
         let loaded = state.load_index().unwrap();
         assert_eq!(loaded.identities.len(), 2);
         assert_eq!(loaded.active.as_deref(), Some("bob"));
+    }
+
+    /// Two distinct 32-byte hex pubkeys — stand-ins for the identities
+    /// two different passphrases would derive.
+    const SPK_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SPK_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn ct_eq_matches_plain_equality() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(ct_eq(b"", b""));
+    }
+
+    /// The reported bug: re-opening an existing identity with the wrong
+    /// passphrase must fail rather than derive a second identity.
+    #[test]
+    fn stored_verifier_rejects_a_different_derived_key() {
+        assert_eq!(
+            decide_verifier(Some(SPK_A), SPK_B, true, false),
+            VerifierDecision::WrongPassphrase,
+        );
+    }
+
+    /// `confirm_pin_verifier` must not be usable to bypass a verifier
+    /// that is already pinned — it only ever applies to legacy pinning.
+    #[test]
+    fn confirmation_flag_cannot_override_a_stored_verifier() {
+        assert_eq!(
+            decide_verifier(Some(SPK_A), SPK_B, true, true),
+            VerifierDecision::WrongPassphrase,
+        );
+    }
+
+    #[test]
+    fn stored_verifier_accepts_the_matching_key_without_rewriting() {
+        assert_eq!(
+            decide_verifier(Some(SPK_A), SPK_A, true, false),
+            VerifierDecision::Accept { pin: None },
+        );
+    }
+
+    /// Brand-new identity: the passphrase defines it, so pin immediately
+    /// and without a confirmation prompt.
+    #[test]
+    fn fresh_identity_pins_verifier_unprompted() {
+        assert_eq!(
+            decide_verifier(None, SPK_A, false, false),
+            VerifierDecision::Accept {
+                pin: Some(SPK_A.to_string())
+            },
+        );
+    }
+
+    /// Pre-verifier identity: refuse to guess which passphrase is right.
+    /// Pinning a typo here would be permanent and would let the unlock
+    /// heartbeat republish under the wrong keypair.
+    #[test]
+    fn legacy_identity_requires_confirmation_before_pinning() {
+        assert_eq!(
+            decide_verifier(None, SPK_A, true, false),
+            VerifierDecision::NeedsConfirmation,
+        );
+        assert_eq!(
+            decide_verifier(None, SPK_A, true, true),
+            VerifierDecision::Accept {
+                pin: Some(SPK_A.to_string())
+            },
+        );
+    }
+
+    /// Saving publish settings rewrites the whole config; the verifier
+    /// has to survive that or every settings save would silently
+    /// un-protect the identity.
+    #[test]
+    fn publish_config_rewrite_preserves_verifier() {
+        let (state, _dir) = make_test_state();
+        std::fs::create_dir_all(state.identity_dir("alice")).unwrap();
+        let mut cfg = state.load_identity_config("alice").unwrap();
+        cfg.verifier_spk_hex = Some(SPK_A.to_string());
+        state.save_identity_config("alice", &cfg).unwrap();
+
+        let reloaded = state.load_identity_config("alice").unwrap();
+        assert_eq!(reloaded.verifier_spk_hex.as_deref(), Some(SPK_A));
     }
 
     /// Locks the wire shape of [`MaybeRepublishResult`]; the frontend
