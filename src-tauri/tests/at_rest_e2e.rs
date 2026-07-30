@@ -246,6 +246,76 @@ async fn legacy_plaintext_database_surfaces_its_own_error_kind() {
     drop(created);
 }
 
+/// Lockout regression: an identity whose database is already encrypted but
+/// which has no verifier yet — what a CLI import looks like.
+///
+/// Confirming the prompt with a typo'd passphrase must NOT record that
+/// passphrase's verifier. If it did, the real passphrase would be measured
+/// against the wrong verifier on every later unlock and the identity would
+/// be permanently unopenable.
+#[tokio::test]
+async fn confirming_a_wrong_passphrase_cannot_pin_a_lockout_verifier() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app_with_root(dir.path());
+
+    // Create normally, then strip the verifier to mimic an import: the
+    // database stays encrypted under PASS, config keeps its salt.
+    init_or_unlock(create_args("alice", PASS), app.state())
+        .await
+        .expect("identity creates");
+    lock_identity(app.state()).await.unwrap();
+    {
+        let st = app.state::<AppState>();
+        let mut cfg = st.load_identity_config("alice").unwrap();
+        cfg.verifier_spk_hex = None;
+        st.save_identity_config("alice", &cfg).unwrap();
+    }
+
+    // Unpinned, so an ordinary unlock asks for confirmation first.
+    let err = init_or_unlock(unlock_args("alice", WRONG), app.state())
+        .await
+        .expect_err("unpinned identity must ask before pinning");
+    assert_eq!(err.kind, "verifier_unpinned", "got {err:?}");
+
+    // Now the dangerous path: confirm, but with the WRONG passphrase.
+    let mut confirmed = unlock_args("alice", WRONG);
+    confirmed.confirm_pin_verifier = true;
+    let err = init_or_unlock(confirmed, app.state())
+        .await
+        .expect_err("a wrong passphrase must not open the encrypted database");
+    assert_ne!(
+        err.kind, "verifier_unpinned",
+        "confirmation was given, so this should have moved past the prompt",
+    );
+
+    // The critical assertion: nothing was pinned.
+    let cfg = app
+        .state::<AppState>()
+        .load_identity_config("alice")
+        .unwrap();
+    assert_eq!(
+        cfg.verifier_spk_hex, None,
+        "a failed unlock must not persist a verifier — doing so locks the \
+         identity out permanently",
+    );
+
+    // And the real passphrase still works, pinning the correct verifier.
+    let mut good = unlock_args("alice", PASS);
+    good.confirm_pin_verifier = true;
+    let opened = init_or_unlock(good, app.state())
+        .await
+        .expect("the real passphrase must still open the identity");
+    let cfg = app
+        .state::<AppState>()
+        .load_identity_config("alice")
+        .unwrap();
+    assert_eq!(
+        cfg.verifier_spk_hex.as_deref(),
+        Some(opened.ed25519_signing_public_key_hex.as_str()),
+        "a successful unlock should pin the correct verifier",
+    );
+}
+
 /// Two identities under the same passphrase must still be distinct, since
 /// each gets its own random Argon2id salt.
 #[tokio::test]

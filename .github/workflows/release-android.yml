@@ -171,7 +171,12 @@ jobs:
         # AR is set alongside it for the same reason. The linker and CC come
         # from Tauri's own Android plumbing, so they are left alone.
         run: |
-          NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # Built from setup-ndk's own output, matching the ANDROID_NDK_HOME /
+          # NDK_HOME export above. Not ANDROID_NDK_ROOT: this workflow never
+          # sets that, and GitHub runners preset it to their preinstalled NDK
+          # — so it would silently resolve to a different version than the
+          # r26d pinned here.
+          NDK_BIN="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -x "$NDK_BIN/llvm-ranlib" || {
             echo "llvm-ranlib not found under $NDK_BIN" >&2
             exit 1
