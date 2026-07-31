@@ -656,7 +656,17 @@
         void refreshContacts();
       }
     } catch (err) {
-      if (isCommandError(err) && err.kind === "wrong_passphrase") {
+      if (isCommandError(err) && err.kind === "legacy_plaintext_db") {
+        // Predates at-rest encryption and cannot be opened by this build.
+        // No passphrase will help, so say so instead of leaving the user
+        // retrying one.
+        error =
+          `${switchTargetUsername} was created before local encryption and can't be ` +
+          `opened by this version. Its data isn't recoverable — export a backup with ` +
+          `the previous version if you still have it, then re-create the identity here.`;
+        switchPassphrase = "";
+        switchNeedsPinConfirm = false;
+      } else if (isCommandError(err) && err.kind === "wrong_passphrase") {
         // Distinct from "identity not found" — the identity is there, the
         // passphrase isn't right. Keep the form open so the user can retry.
         error = "Wrong passphrase.";

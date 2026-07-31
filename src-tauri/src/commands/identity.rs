@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use dnsmesh_client::{DmpClient, DmpClientConfig};
+use dnsmesh_core::crypto::DmpCrypto;
 
 use crate::error::{CommandError, CommandResult};
 use std::sync::Arc;
@@ -209,16 +210,28 @@ fn decide_verifier(
 ///
 /// `Ok(())` means the passphrase is authenticated and the caller may go on
 /// to publish active state. Every error path is side-effect-free.
+/// Apply [`decide_verifier`], rejecting a passphrase this identity's pinned
+/// verifier disagrees with.
+///
+/// Returns the verifier still to be recorded, if any. Deliberately does
+/// **not** persist it: the caller must wait until the database has opened
+/// successfully. Pinning earlier is a lockout hazard — for an identity with
+/// an encrypted database but no verifier yet (a CLI import, say), a typo'd
+/// passphrase that the user confirms at the prompt would record the wrong
+/// verifier, and every later unlock with the *real* passphrase would then be
+/// rejected against it. Waiting for the open means a wrong passphrase fails
+/// on the database instead and nothing is written.
+///
+/// Every error path here is side-effect-free.
 fn enforce_verifier(
-    cfg: &mut IdentityConfig,
-    state: &AppState,
+    stored_verifier: Option<&str>,
     username: &str,
     derived_spk_hex: &str,
     identity_existed: bool,
     confirm_pin: bool,
-) -> CommandResult<()> {
+) -> CommandResult<Option<String>> {
     match decide_verifier(
-        cfg.verifier_spk_hex.as_deref(),
+        stored_verifier,
         derived_spk_hex,
         identity_existed,
         confirm_pin,
@@ -236,15 +249,7 @@ fn enforce_verifier(
                 "derived_signing_public_key_hex": derived_spk_hex,
             }),
         )),
-        VerifierDecision::Accept { pin } => {
-            if let Some(spk) = pin {
-                cfg.verifier_spk_hex = Some(spk);
-                state
-                    .save_identity_config(username, cfg)
-                    .map_err(CommandError::from)?;
-            }
-            Ok(())
-        }
+        VerifierDecision::Accept { pin } => Ok(pin),
     }
 }
 
@@ -329,6 +334,32 @@ pub async fn init_or_unlock(
     let kdf_salt = ensure_kdf_salt(&mut cfg, &state, &username)?;
     ensure_default_claim_via(&mut cfg, &state, &username, &domain)?;
 
+    // Authenticate the passphrase before anything opens the database.
+    //
+    // This has to happen ahead of `DmpClient::new`, not after it. The
+    // database is SQLCipher-encrypted under a key derived from this same
+    // passphrase, so a wrong one makes the open fail first — with sqlite's
+    // "file is not a database", which reads as corruption rather than as a
+    // bad passphrase, and never reaches the verifier at all.
+    //
+    // Costs a second Argon2id pass, since `DmpClient::new` derives again
+    // internally from the passphrase string. Worth it: it buys the correct
+    // error and keeps every side effect, including creating the database
+    // file, behind the check.
+    let precheck = DmpCrypto::from_passphrase(&args.passphrase, Some(&kdf_salt))
+        .map_err(|e| CommandError::new("internal", format!("deriving identity: {e}")))?;
+    let derived_spk_hex = hex::encode(precheck.signing_public_key_bytes());
+    drop(precheck);
+    // Any verifier to record is held back until the database has opened —
+    // see `enforce_verifier` for why pinning before that is a lockout risk.
+    let pending_verifier_pin = enforce_verifier(
+        cfg.verifier_spk_hex.as_deref(),
+        &username,
+        &derived_spk_hex,
+        identity_existed,
+        args.confirm_pin_verifier,
+    )?;
+
     let inner_reader = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
     let refreshable_reader = Arc::new(RefreshableReader::new(inner_reader));
     let (writer, publish_configured) =
@@ -346,24 +377,25 @@ pub async fn init_or_unlock(
         // wire format; mirrors the SDK and CLI defaults.
         rotation_chain_enabled: false,
     };
+    // The passphrase was authenticated above, before the database was
+    // opened. By here a failure is a genuine storage or config problem, not
+    // a wrong passphrase — including `legacy_plaintext_db` for a database
+    // written before at-rest encryption, which no passphrase can open.
     let client = DmpClient::new(client_cfg).await?;
+    debug_assert_eq!(
+        derived_spk_hex,
+        client.ed25519_signing_public_key_hex(),
+        "verifier precheck and the constructed client disagree on the identity",
+    );
 
-    // Authenticate the passphrase before anything observable happens.
-    //
-    // Argon2id is deterministic, so a wrong passphrase yields a *valid*
-    // but different keypair rather than an error — nothing below this
-    // point can tell the difference. Every early return here leaves
-    // `index.active`, `state.active`, and the publish heartbeat untouched;
-    // the constructed client is dropped. `DmpClient::new` is documented
-    // as network-free, so reaching this check has published nothing.
-    enforce_verifier(
-        &mut cfg,
-        &state,
-        &username,
-        &client.ed25519_signing_public_key_hex(),
-        identity_existed,
-        args.confirm_pin_verifier,
-    )?;
+    // The open succeeded, so the passphrase genuinely decrypts this
+    // database. Only now is it safe to record a first-time verifier.
+    if let Some(spk) = pending_verifier_pin {
+        cfg.verifier_spk_hex = Some(spk);
+        state
+            .save_identity_config(&username, &cfg)
+            .map_err(CommandError::from)?;
+    }
 
     let active = ActiveClient {
         client: Arc::new(client),

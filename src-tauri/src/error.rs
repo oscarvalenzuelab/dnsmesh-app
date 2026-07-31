@@ -15,8 +15,8 @@ pub struct CommandError {
     /// Stable kind string the UI switches on. One of: `validation`,
     /// `not_initialized`, `publish_unconfigured`, `invalid_config`,
     /// `contact_not_found`, `no_record_found`, `verify_failed`,
-    /// `publish_failed`, `wrong_passphrase`, `verifier_unpinned`, `io`,
-    /// `net`, `config`, `internal`, `sdk`.
+    /// `publish_failed`, `wrong_passphrase`, `verifier_unpinned`,
+    /// `legacy_plaintext_db`, `io`, `net`, `config`, `internal`, `sdk`.
     pub kind: String,
     /// Human-readable message. Safe to render verbatim.
     pub message: String,
@@ -96,6 +96,18 @@ impl From<dnsmesh_client::ClientError> for CommandError {
                 format!("publish failed for {kind} at {name}"),
                 json!({ "publish_kind": kind, "name": name }),
             ),
+            // A database written before at-rest encryption cannot be opened
+            // by this build and has no in-place upgrade path, so it needs a
+            // kind of its own: the UI has to say "re-create this identity"
+            // rather than treat it as a transient I/O problem the user could
+            // retry, or as a passphrase they could correct.
+            CE::Storage(dnsmesh_storage::StorageError::LegacyPlaintextDatabase { ref path }) => {
+                Self::with_details(
+                    "legacy_plaintext_db",
+                    message.clone(),
+                    json!({ "path": path }),
+                )
+            }
             CE::Net(_) | CE::Storage(_) => Self::new("io", message),
             CE::Crypto(_)
             | CE::Identity(_)

@@ -217,7 +217,13 @@
       await refreshActiveIdentity();
       await reloadList();
     } catch (err) {
-      if (isCommandError(err) && err.kind === "wrong_passphrase") {
+      if (isCommandError(err) && err.kind === "legacy_plaintext_db") {
+        switchError =
+          `${switchTarget} predates local encryption and can't be opened by this ` +
+          `version. Re-create the identity from the Identities page.`;
+        switchPassphrase = "";
+        switchNeedsPinConfirm = false;
+      } else if (isCommandError(err) && err.kind === "wrong_passphrase") {
         switchError = "Wrong passphrase.";
         switchPassphrase = "";
         switchNeedsPinConfirm = false;
