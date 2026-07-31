@@ -58,6 +58,15 @@ export interface IdentitySummary {
   is_active: boolean;
 }
 
+// Wire shape of one persisted outgoing message. Mirrors `SentRow` in
+// `$lib/stores/sent`; kept here so api.ts has no store import.
+export interface SentRowDto {
+  msg_id_hex: string;
+  recipient_username: string;
+  timestamp: number;
+  plaintext_utf8: string;
+}
+
 export interface InitOrUnlockArgs {
   username: string;
   passphrase: string;
@@ -200,6 +209,22 @@ export const api = {
 
   // inbox (per-identity persistent store)
   inboxLoad: (): Promise<InboxRow[]> => invoke("inbox_load"),
+
+  // sent log (per-identity, sealed at rest alongside the inbox)
+  sentLoad: (ttlHours?: number): Promise<SentRowDto[]> =>
+    invoke("sent_load", { args: { ttl_hours: ttlHours ?? null } }),
+  // `username` is checked against the unlocked identity on the Rust side,
+  // not inferred from it — a switch between send and persist would
+  // otherwise file the row under the wrong identity.
+  sentAppend: (username: string, row: SentRowDto): Promise<SentRowDto[]> =>
+    invoke("sent_append", { args: { username, row } }),
+  sentRemoveByRecipient: (
+    username: string,
+    recipientUsername: string,
+  ): Promise<SentRowDto[]> =>
+    invoke("sent_remove_by_recipient", {
+      args: { username, recipient_username: recipientUsername },
+    }),
   inboxAppend: (
     messages: PersistedInboxMessage[],
   ): Promise<InboxAppendResult> =>

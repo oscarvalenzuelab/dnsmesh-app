@@ -115,7 +115,7 @@
         await deleteMessages(incomingIds);
       }
       if ($activeIdentity && activeConversation.username) {
-        removeSentByRecipient(
+        void removeSentByRecipient(
           $activeIdentity.username,
           activeConversation.username,
         );
@@ -314,7 +314,7 @@
       // deferred until that identity is next unlocked).
       const identityNow = $activeIdentity?.username ?? null;
       if (identityNow === identityAtSend) {
-        appendSent(identityAtSend, {
+        void appendSent(identityAtSend, {
           msg_id_hex: result.msg_id_hex,
           recipient_username: recipient,
           timestamp: Math.floor(Date.now() / 1000),

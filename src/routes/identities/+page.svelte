@@ -496,7 +496,7 @@
         await refreshActiveIdentity();
         await reloadList();
         if ($activeIdentity) {
-          hydrateSent($activeIdentity.username);
+          void hydrateSent($activeIdentity.username);
           void hydrateInbox();
           void refreshContacts();
         }
@@ -535,7 +535,7 @@
         await refreshActiveIdentity();
         await reloadList();
         if ($activeIdentity) {
-          hydrateSent($activeIdentity.username);
+          void hydrateSent($activeIdentity.username);
           void hydrateInbox();
           void refreshContacts();
         }
@@ -562,7 +562,7 @@
       await refreshActiveIdentity();
       await reloadList();
       if ($activeIdentity) {
-        hydrateSent($activeIdentity.username);
+        void hydrateSent($activeIdentity.username);
         void hydrateInbox();
         void refreshContacts();
       }
@@ -651,7 +651,7 @@
       await refreshActiveIdentity();
       await reloadList();
       if ($activeIdentity) {
-        hydrateSent($activeIdentity.username);
+        void hydrateSent($activeIdentity.username);
         void hydrateInbox();
         void refreshContacts();
       }

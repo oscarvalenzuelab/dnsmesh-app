@@ -316,6 +316,132 @@ async fn confirming_a_wrong_passphrase_cannot_pin_a_lockout_verifier() {
     );
 }
 
+/// The persisted message history must be opaque on disk. This is the
+/// largest plaintext exposure the encryption work set out to close: the
+/// database holds only pending intros, `inbox.jsonl` holds everything
+/// received.
+#[tokio::test]
+async fn inbox_history_is_encrypted_on_disk() {
+    use dnsmesh_app_lib::commands::inbox::{InboxAppendArgs, PersistedInboxMessage, inbox_append};
+
+    const BODY: &str = "SENSITIVE-MESSAGE-BODY-CANARY";
+    // Long enough that it cannot turn up by chance in random base64 — a
+    // short canary like "bob" makes this assertion flaky rather than
+    // meaningful.
+    const LABEL: &str = "SENDER-LABEL-CANARY-bob@dmp.example.com";
+    let dir = tempfile::tempdir().unwrap();
+    let app = app_with_root(dir.path());
+
+    init_or_unlock(create_args("alice", PASS), app.state())
+        .await
+        .expect("identity creates");
+
+    let appended = inbox_append(
+        InboxAppendArgs {
+            messages: vec![PersistedInboxMessage {
+                sender_signing_pk_hex: "ab".repeat(32),
+                msg_id_hex: "cd".repeat(16),
+                timestamp: 1_700_000_000,
+                plaintext_utf8: BODY.to_string(),
+                plaintext_bytes: BODY.as_bytes().to_vec(),
+                sender_label: Some(LABEL.to_string()),
+            }],
+        },
+        app.state(),
+    )
+    .await
+    .expect("append succeeds");
+    assert_eq!(appended.appended, 1);
+
+    let inbox_file = app
+        .state::<AppState>()
+        .identity_dir("alice")
+        .join("inbox.jsonl");
+    let raw = std::fs::read(&inbox_file).expect("inbox file exists");
+
+    assert!(
+        !raw.windows(BODY.len()).any(|w| w == BODY.as_bytes()),
+        "message body found in plaintext in inbox.jsonl",
+    );
+    // The sender label is metadata but just as revealing, so check it too.
+    assert!(
+        !raw.windows(LABEL.len()).any(|w| w == LABEL.as_bytes()),
+        "sender label found in plaintext in inbox.jsonl",
+    );
+
+    // And it still round-trips through the app for the unlocked identity.
+    let rows = dnsmesh_app_lib::commands::inbox::inbox_load(app.state())
+        .await
+        .expect("inbox loads");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].plaintext_utf8, BODY);
+}
+
+/// Deleting a message must not strip the encryption off the survivors.
+///
+/// Deliberately end-to-end: the delete rewrite is a second place rows get
+/// written, and a unit test that drives a test-local copy of that logic
+/// cannot catch the real command emitting plaintext.
+#[tokio::test]
+async fn deleting_a_message_leaves_the_others_sealed() {
+    use dnsmesh_app_lib::commands::inbox::{
+        InboxAppendArgs, InboxDeleteArgs, PersistedInboxMessage, inbox_append, inbox_delete,
+    };
+
+    const KEEP: &str = "KEPT-MESSAGE-BODY-CANARY";
+    const GONE: &str = "DELETED-MESSAGE-BODY-CANARY";
+    let dir = tempfile::tempdir().unwrap();
+    let app = app_with_root(dir.path());
+
+    init_or_unlock(create_args("alice", PASS), app.state())
+        .await
+        .expect("identity creates");
+
+    let mk = |id: u8, body: &str| PersistedInboxMessage {
+        sender_signing_pk_hex: "ab".repeat(32),
+        msg_id_hex: format!("{id:032x}"),
+        timestamp: 1_700_000_000 + u64::from(id),
+        plaintext_utf8: body.to_string(),
+        plaintext_bytes: body.as_bytes().to_vec(),
+        sender_label: None,
+    };
+
+    inbox_append(
+        InboxAppendArgs {
+            messages: vec![mk(1, KEEP), mk(2, GONE), mk(3, KEEP)],
+        },
+        app.state(),
+    )
+    .await
+    .expect("append succeeds");
+
+    let res = inbox_delete(
+        InboxDeleteArgs {
+            msg_id_hexes: vec![format!("{:032x}", 2)],
+        },
+        app.state(),
+    )
+    .await
+    .expect("delete succeeds");
+    assert_eq!(res.removed, 1);
+
+    let raw = std::fs::read(
+        app.state::<AppState>()
+            .identity_dir("alice")
+            .join("inbox.jsonl"),
+    )
+    .unwrap();
+    assert!(
+        !raw.windows(KEEP.len()).any(|w| w == KEEP.as_bytes()),
+        "surviving message bodies left readable after a delete",
+    );
+
+    let rows = dnsmesh_app_lib::commands::inbox::inbox_load(app.state())
+        .await
+        .expect("inbox loads");
+    assert_eq!(rows.len(), 2, "the two kept rows must still load");
+}
+
 /// Two identities under the same passphrase must still be distinct, since
 /// each gets its own random Argon2id salt.
 #[tokio::test]
