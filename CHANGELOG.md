@@ -15,6 +15,67 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-07-30 - encryption at rest
+
+Everything on disk that carries message content or key material is now
+encrypted with a key derived from the identity passphrase. Until this
+release the passphrase only derived keys; it did not protect anything
+sitting in the identity folder.
+
+SDK pin moves to `sdk-v0.2.0`.
+
+### Breaking
+
+- Identities created by earlier versions cannot be opened. Their database
+  predates encryption and there is no in-place upgrade, so the identity
+  has to be recreated. Both unlock screens explain this instead of
+  reporting a generic failure.
+- The backup archive is encrypted under a passphrase you set at export
+  time, separate from the identity passphrase. It cannot be recovered:
+  without it the backup will not restore. Archives from earlier versions
+  are plaintext and restoring one says so rather than blaming the
+  passphrase.
+
+### Added
+
+- The sqlite database is encrypted with SQLCipher.
+- The received history, the sent log and the read-state file are
+  encrypted, one record per line so a damaged line costs one message
+  rather than the whole history.
+- The sent log moved out of localStorage into the identity folder. It
+  had been sitting outside it in the clear, which meant wiping the
+  database still left one side of every conversation readable.
+- The TSIG secret goes into the OS credential store on macOS, Windows and
+  Linux. On Android it is encrypted in the identity folder instead,
+  because the credential-store library has no Android backend and would
+  silently persist nothing.
+- Unlock rejects a wrong passphrase instead of deriving a different
+  identity under the same name. Identities created before verification
+  shipped ask for confirmation once, and the verifier is only recorded
+  after the database confirms the passphrase is right.
+- End-to-end tests against the live public nodes, run with
+  `cargo test --test public_network_e2e -- --ignored`.
+
+### Fixed
+
+- Deleting a message no longer rewrites the remaining ones in plaintext.
+- Plaintext history from an older build is migrated rather than skipped,
+  so upgrading does not silently empty the inbox or leave readable copies
+  behind.
+- Sent-log writes name the identity they are for, so switching identity
+  mid-write cannot file a message under the wrong one.
+- Exporting a backup requires the identity to be unlocked. It previously
+  accepted any username from the index with no passphrase at all.
+
+### Notes
+
+Wire format is unchanged, so this does not affect interoperability with
+peers running older versions.
+
+Filenames, folder names and file sizes are not hidden. Which identities
+exist and roughly how much traffic they have seen is still observable.
+See SECURITY.md.
+
 ## [0.1.0-alpha.8] — 2026-05-15 — First-contact UX completion
 
 Closes the cross-zone first-contact UX gap end-to-end. Surfaced
