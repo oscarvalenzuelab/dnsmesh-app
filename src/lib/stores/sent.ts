@@ -38,6 +38,41 @@ function ttlKey(identity: string): string {
   return `dnsmesh.sent.ttl.v2.${identity}`;
 }
 
+// Where rows lived before they moved to the sealed backend store.
+function legacyRowsKey(identity: string): string {
+  return `dnsmesh.sent.v1.${identity}`;
+}
+
+// Move any rows left in localStorage into the sealed store, then drop the
+// key. Without this an upgraded install both loses the history from the UI
+// and keeps plaintext message bodies in localStorage indefinitely — which
+// would defeat the point of sealing the file.
+async function migrateLegacyRows(identity: string): Promise<void> {
+  if (typeof localStorage === "undefined") return;
+  const raw = localStorage.getItem(legacyRowsKey(identity));
+  if (!raw) return;
+  let rows: SentRow[] = [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) rows = parsed as SentRow[];
+  } catch {
+    // Unreadable legacy blob: nothing to carry over, but still clear it
+    // rather than leaving it sitting there.
+  }
+  try {
+    for (const row of rows) {
+      if (row && typeof row.msg_id_hex === "string") {
+        await api.sentAppend(row);
+      }
+    }
+  } catch {
+    // Persisting failed — keep the legacy key so a later attempt can
+    // retry rather than dropping the rows on the floor.
+    return;
+  }
+  localStorage.removeItem(legacyRowsKey(identity));
+}
+
 export function getSentTtl(identity: string): SentTtlHours {
   if (typeof localStorage === "undefined") return DEFAULT_SENT_TTL_HOURS;
   const raw = localStorage.getItem(ttlKey(identity));
@@ -60,6 +95,7 @@ export function setSentTtl(identity: string, ttl: SentTtlHours): void {
 export async function hydrateSent(identity: string): Promise<void> {
   activeKey = identity;
   try {
+    await migrateLegacyRows(identity);
     const rows = await api.sentLoad(getSentTtl(identity));
     // A slower hydrate must not clobber a newer identity's rows.
     if (activeKey !== identity) return;
