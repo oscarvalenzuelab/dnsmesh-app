@@ -86,15 +86,12 @@ pub async fn export_identity_backup(
     args: ExportArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<ExportResult> {
-    let active_username = {
+    let (active_username, storage_key) = {
         let guard = state.active.read().await;
-        guard
-            .as_ref()
-            .ok_or_else(CommandError::not_initialized)?
-            .username
-            .clone()
+        let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
+        (active.username.clone(), active.client.storage_key())
     };
-    do_export(args, &state, &active_username)
+    do_export(args, &state, &active_username, storage_key.as_ref())
 }
 
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
@@ -102,6 +99,7 @@ fn do_export(
     args: ExportArgs,
     state: &AppState,
     active_username: &str,
+    storage_key: &[u8],
 ) -> CommandResult<ExportResult> {
     let username = sanitize_username(&args.username)?;
 
@@ -148,6 +146,13 @@ fn do_export(
     // Inputs are small (sqlite + JSONL); buffer in memory and
     // atomic_write rather than streaming.
     let identity_dir = state.identity_dir(&username);
+    // A publish block may point its secret outside the identity directory,
+    // so the export has to look where the config says, not just at the
+    // conventional location.
+    let publish_secret_path = state
+        .load_identity_config(&username)
+        .ok()
+        .and_then(|c| c.publish.map(|p| p.tsig_secret_path));
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -205,9 +210,29 @@ fn do_export(
         append_file(&mut tar, &archive_entry_path(&username, DB_FILE), &db_path)?;
         file_count += 1;
 
+        // The TSIG secret no longer lives in the identity directory — it
+        // is in the OS credential store, or sealed under a name the
+        // importing install could not open. Pull it back out and write it
+        // into the archive in the interchange form, or a restore would
+        // silently arrive without the ability to publish.
+        if let Some(secret) = crate::tsig_secret::peek(
+            &identity_dir,
+            &username,
+            storage_key,
+            publish_secret_path.as_deref(),
+        )? {
+            append_bytes(
+                &mut tar,
+                &archive_entry_path(&username, TSIG_FILE),
+                &secret,
+                now,
+            )?;
+            file_count += 1;
+        }
+
         // Optional entries — skipped when absent so a fresh identity
         // still backs up cleanly.
-        for optional in [TSIG_FILE, INBOX_FILE, INBOX_READ_FILE] {
+        for optional in [INBOX_FILE, INBOX_READ_FILE] {
             let src = identity_dir.join(optional);
             if src.is_file() {
                 append_file(&mut tar, &archive_entry_path(&username, optional), &src)?;
@@ -546,6 +571,10 @@ fn ensure_safe_relative(rel: &str) -> Result<(), CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fixed at-rest key for the export tests. Only the sealed-fallback
+    /// path consults it; on desktop the credential store is used instead.
+    const TEST_STORAGE_KEY: [u8; 32] = [0x2a; 32];
     use crate::state::PublishConfig;
     use tempfile::TempDir;
 
@@ -623,6 +652,7 @@ mod tests {
             },
             &src_state,
             "bob",
+            &TEST_STORAGE_KEY,
         )
         .unwrap_err();
         assert_eq!(err.kind, "validation", "got {err:?}");
@@ -648,6 +678,7 @@ mod tests {
             },
             &src_state,
             "alice",
+            &TEST_STORAGE_KEY,
         )
         .unwrap();
 
@@ -712,6 +743,7 @@ mod tests {
             },
             &src_state,
             "alice",
+            &TEST_STORAGE_KEY,
         )
         .unwrap();
 
@@ -767,6 +799,7 @@ mod tests {
             },
             &src_state,
             "alice",
+            &TEST_STORAGE_KEY,
         )
         .unwrap();
 
@@ -810,6 +843,7 @@ mod tests {
             },
             &src_state,
             "alice",
+            &TEST_STORAGE_KEY,
         )
         .unwrap();
 

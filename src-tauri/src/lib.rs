@@ -13,6 +13,7 @@ pub mod atrest;
 pub mod commands;
 pub mod error;
 pub mod state;
+pub mod tsig_secret;
 
 use crate::state::AppState;
 
