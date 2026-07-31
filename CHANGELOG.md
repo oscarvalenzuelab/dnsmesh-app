@@ -15,6 +15,31 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.12] - 2026-07-31 - failures explain themselves
+
+SDK pin moves to `sdk-v0.4.0`.
+
+### Fixed
+
+- A failed publish says why. It used to report only the name, so a wrong
+  TSIG secret, a name outside the key's scope, clock skew and an
+  unreachable server all looked the same and none could be diagnosed from
+  the app. If publishing has been failing for you, this build will name the
+  cause.
+- The cross-zone send warning no longer fires on every message. Every
+  identity is seeded with the other federation zones, publishing into one
+  needs credentials for that zone's node, and most people are registered
+  with a single node, so the warning was constant and therefore ignorable.
+  It now interrupts only when your own zone claim fails, which is the case
+  that can leave a message undiscoverable.
+
+### Added
+
+- End-to-end coverage of the desktop create-and-register flow, driving the
+  real commands in the order the Identities page calls them and confirming
+  the record resolves. There was none before, which is why registration
+  reports could not be confirmed or ruled out.
+
 ## [0.1.0-alpha.11] - 2026-07-31 - cross-zone sends stop lying
 
 SDK pin moves to `sdk-v0.3.0`.

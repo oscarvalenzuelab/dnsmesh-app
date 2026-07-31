@@ -1,6 +1,6 @@
 {
   "name": "dnsmesh-app",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "description": "Tauri client (desktop + Android) for the DNS Mesh Protocol",
   "type": "module",
   "scripts": {
