@@ -51,6 +51,7 @@ rand = "0.8"
 chacha20poly1305 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 
+
 # HTTPS client for the M9.2 TSIG-register dance (challenge / sign /
 # confirm) against a multi-tenant DMP node. `rustls-tls` keeps us off
 # the system openssl. `json` brings in serde-driven request/response
@@ -63,6 +64,25 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # `.dmp-backup.tar.gz` file the user can stash in a vault.
 tar = "0.4"
 flate2 = "1"
+
+# OS credential store for the TSIG secret, per platform.
+#
+# The backend features are NOT optional extras: without them keyring
+# compiles fine and falls through to an in-memory `mock` that persists
+# nothing (keyring/src/lib.rs — every platform arm is gated on its feature,
+# with `pub use mock as default` otherwise). Enabling them per target also
+# keeps the Secret Service / dbus stack out of macOS and Windows builds.
+#
+# Android is absent on purpose: keyring has no backend for it at all, so it
+# would silently be that same mock. It uses the sealed-file path instead.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 
 [dev-dependencies]
 tempfile = "3"

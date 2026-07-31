@@ -358,9 +358,22 @@ pub fn build_reader(resolvers: Option<&[String]>) -> Result<Arc<dyn DnsRecordRea
 /// Returns `(writer, true)` if a real TSIG writer was wired, `(stub,
 /// false)` otherwise. The stub satisfies the SDK's "must have a writer"
 /// requirement; commands that need to publish gate on the boolean.
-pub fn build_writer(publish: Option<&PublishConfig>) -> Result<(Arc<dyn DnsRecordWriter>, bool)> {
-    match publish {
-        Some(p) => {
+/// `tsig_secret` is the already-loaded secret for this identity. It is not
+/// read from disk here: the secret lives in the OS credential store on
+/// desktop and in a sealed file on Android, and resolving that needs the
+/// identity's storage key, which only the caller has.
+///
+/// `Some(publish)` with `None` secret means publish is configured but the
+/// credential is missing — a restored archive whose secret never made it
+/// across, say. That yields the stub writer rather than an error, so the
+/// identity still unlocks and the UI can report publishing as unconfigured
+/// instead of refusing to open the identity at all.
+pub fn build_writer(
+    publish: Option<&PublishConfig>,
+    tsig_secret: Option<Vec<u8>>,
+) -> Result<(Arc<dyn DnsRecordWriter>, bool)> {
+    match (publish, tsig_secret) {
+        (Some(p), Some(secret)) => {
             use std::net::ToSocketAddrs as _;
             let server = p
                 .server
@@ -370,36 +383,42 @@ pub fn build_writer(publish: Option<&PublishConfig>) -> Result<(Arc<dyn DnsRecor
                 .ok_or_else(|| anyhow!("server `{}` resolved to zero addresses", p.server))?;
             let algorithm = TsigAlgorithm::parse(&p.tsig_algorithm)
                 .with_context(|| format!("unsupported TSIG algorithm `{}`", p.tsig_algorithm))?;
-            let secret = read_tsig_secret(&p.tsig_secret_path)?;
+            let secret = parse_tsig_secret(&secret)?;
             let key = TsigKey::new(&p.tsig_key_name, algorithm, secret)
                 .context("building TSIG key from config")?;
             let cfg = DnsUpdateWriterConfig::new(p.zone.clone(), server, key);
             let writer = DnsUpdateWriter::new(cfg).context("building DnsUpdateWriter")?;
             Ok((Arc::new(writer), true))
         }
-        None => Ok((Arc::new(InMemoryDnsStore::new()), false)),
+        (Some(p), None) => {
+            tracing::warn!(
+                zone = p.zone.as_str(),
+                "publish is configured but no TSIG secret is stored; \
+                 publishing stays disabled for this identity",
+            );
+            Ok((Arc::new(InMemoryDnsStore::new()), false))
+        }
+        (None, _) => Ok((Arc::new(InMemoryDnsStore::new()), false)),
     }
 }
 
-/// Read a TSIG secret from disk. Accepts `base64:` / `hex:` prefixes
-/// or raw bytes — same shape the CLI consumes.
-fn read_tsig_secret(path: &Path) -> Result<Vec<u8>> {
+/// Decode a stored TSIG secret. Accepts `base64:` / `hex:` prefixes or raw
+/// bytes — same shape the CLI consumes, kept so a secret carried over from
+/// a CLI import or an archive still parses.
+fn parse_tsig_secret(bytes: &[u8]) -> Result<Vec<u8>> {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading TSIG secret at {}", path.display()))?;
-    let text = std::str::from_utf8(&bytes).map_or("", str::trim);
+    let text = std::str::from_utf8(bytes).map_or("", str::trim);
     if let Some(b64_body) = text.strip_prefix("base64:") {
         return BASE64
             .decode(b64_body.trim())
-            .with_context(|| format!("base64-decoding TSIG secret at {}", path.display()));
+            .context("base64-decoding the stored TSIG secret");
     }
     if let Some(hex_body) = text.strip_prefix("hex:") {
-        return hex::decode(hex_body.trim())
-            .with_context(|| format!("hex-decoding TSIG secret at {}", path.display()));
+        return hex::decode(hex_body.trim()).context("hex-decoding the stored TSIG secret");
     }
-    Ok(bytes)
+    Ok(bytes.to_vec())
 }
 
 #[cfg(test)]
