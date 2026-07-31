@@ -98,6 +98,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Feature unification makes this the same SQLCipher-linked build the SDK
 # uses, so opening with no key yields a genuine plaintext file.
 rusqlite = "0.32"
+# Only to recompute the published identity DNS name in the e2e tests.
+sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"

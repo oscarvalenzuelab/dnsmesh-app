@@ -47,13 +47,18 @@ pub struct SendMessageArgs {
 #[derive(Debug, Clone, Serialize)]
 pub struct SendMessageResult {
     pub msg_id_hex: String,
-    /// Provider zones whose claim record could not be published.
-    ///
-    /// Empty on a fully successful send. Non-empty means the message was
-    /// delivered but a recipient who has not pinned the sender will not
-    /// discover it through those zones.
+    /// Set only when the sender's **own** zone claim failed, which can
+    /// leave the message undiscoverable entirely. Worth interrupting for.
     #[serde(default)]
     pub undiscoverable_via: Vec<String>,
+    /// Other federation zones the claim could not reach, because this
+    /// identity holds no publish credentials for them.
+    ///
+    /// Expected for anyone registered with a single node, so the composer
+    /// does not alarm on it. Exposed so Settings can explain it once
+    /// instead of per message.
+    #[serde(default)]
+    pub unreachable_zones: Vec<String>,
 }
 
 #[tauri::command]
@@ -89,25 +94,53 @@ pub async fn send_message(
             &providers,
         )
         .await?;
-    // A claim that did not publish means an un-pinned recipient cannot
-    // discover the message. The send itself succeeded, so this is reported
-    // alongside the result rather than as an error, and the UI decides how
-    // loud to be. Saying nothing would look identical to full success.
-    let undiscoverable_via: Vec<String> = sent
+
+    // Split the failures by whether the user can act on them.
+    //
+    // Every identity is seeded with the other federation zones in
+    // `claim_via`, and publishing into one needs credentials for that
+    // zone's node. Registered with a single node — the normal case — those
+    // attempts always fail. Surfacing them per send means a warning on
+    // literally every message, which trains the user to ignore it and
+    // buries the case that does matter.
+    //
+    // The own-zone claim is different. Without it, a recipient walking us
+    // via `receive_via_claim` has nothing to find, so the message may not
+    // be discoverable at all. That is worth interrupting for.
+    let own_zone_failed = sent
         .claim_failures
         .iter()
+        .any(|f| f.provider_zone == active.domain);
+    let opportunistic: Vec<String> = sent
+        .claim_failures
+        .iter()
+        .filter(|f| f.provider_zone != active.domain)
         .map(|f| f.provider_zone.clone())
         .collect();
-    if !undiscoverable_via.is_empty() {
+
+    if own_zone_failed {
         tracing::warn!(
-            zones = ?undiscoverable_via,
-            "claim records could not be published; an un-pinned recipient \
-             will not find this message",
+            zone = active.domain.as_str(),
+            "own-zone claim failed; this message may not be discoverable",
         );
     }
+    if !opportunistic.is_empty() {
+        // Logged, not surfaced: expected whenever the user is registered
+        // with fewer nodes than they have claim-via zones configured.
+        tracing::info!(
+            zones = ?opportunistic,
+            "claim records skipped for zones we hold no credentials for",
+        );
+    }
+
     Ok(SendMessageResult {
         msg_id_hex: hex::encode(sent.msg_id),
-        undiscoverable_via,
+        undiscoverable_via: if own_zone_failed {
+            vec![active.domain.clone()]
+        } else {
+            Vec::new()
+        },
+        unreachable_zones: opportunistic,
     })
 }
 
