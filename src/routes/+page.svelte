@@ -321,6 +321,17 @@
           plaintext_utf8: body,
         });
       }
+      // The message went out, but a claim that did not publish means an
+      // un-pinned recipient cannot find it. Saying nothing here looks
+      // exactly like a clean send.
+      const undiscoverable = result.undiscoverable_via ?? [];
+      if (undiscoverable.length > 0) {
+        sendError =
+          `Message sent, but it could not be announced in ` +
+          `${undiscoverable.join(", ")}. Someone who has not already added ` +
+          `you as a contact will not see it. Publishing there needs ` +
+          `credentials for that zone, or ask them to add you first.`;
+      }
       // Pull immediately so any inbound reply that already landed
       // before the next 60s tick shows up alongside the outgoing row.
       void pollInbox();
