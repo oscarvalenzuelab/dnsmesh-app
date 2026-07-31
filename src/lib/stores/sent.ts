@@ -61,10 +61,19 @@ async function migrateLegacyRows(identity: string): Promise<void> {
   }
   try {
     for (const row of rows) {
+      // `sentAppend` writes to whichever identity the backend currently
+      // has unlocked, not to `identity`. If the user switches or locks
+      // mid-migration, continuing would file the remaining rows under
+      // someone else's log. Bail and keep the legacy key so the next
+      // hydrate for this identity can finish the job.
+      if (activeKey !== identity) return;
       if (row && typeof row.msg_id_hex === "string") {
         await api.sentAppend(row);
       }
     }
+    // Re-check before dropping the source: the last append may have
+    // landed after a switch.
+    if (activeKey !== identity) return;
   } catch {
     // Persisting failed — keep the legacy key so a later attempt can
     // retry rather than dropping the rows on the floor.

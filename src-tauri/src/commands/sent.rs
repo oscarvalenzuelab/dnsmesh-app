@@ -241,12 +241,19 @@ mod tests {
     /// The reason this moved out of localStorage.
     #[test]
     fn file_does_not_contain_plaintext_bodies() {
+        // Long canaries: a 3-byte one like "bob" can appear by chance in
+        // random base64, which would make this pass or fail for reasons
+        // unrelated to encryption.
+        const RECIPIENT: &str = "RECIPIENT-CANARY-carol";
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(SENT_FILE);
-        write_rows(&path, &TEST_KEY, &[row(1, "bob", 100)]).unwrap();
+        write_rows(&path, &TEST_KEY, &[row(1, RECIPIENT, 100)]).unwrap();
         let raw = std::fs::read(&path).unwrap();
         assert!(!raw.windows(9).any(|w| w == b"message 1"));
-        assert!(!raw.windows(3).any(|w| w == b"bob"));
+        assert!(
+            !raw.windows(RECIPIENT.len())
+                .any(|w| w == RECIPIENT.as_bytes())
+        );
     }
 
     #[test]

@@ -425,8 +425,11 @@ pub async fn inbox_delete(
     let mut kept: Vec<PersistedInboxMessage> = Vec::with_capacity(original_len);
     let mut removed_ids: HashSet<String> = HashSet::new();
     for m in existing {
-        let key = m.msg_id_hex.to_ascii_lowercase();
-        if targets.contains(&key) {
+        // Not named `key`: that is the storage key in this scope, and
+        // shadowing it here is what let the rewrite below silently emit
+        // plaintext.
+        let id = m.msg_id_hex.to_ascii_lowercase();
+        if targets.contains(&id) {
             removed_ids.insert(m.msg_id_hex.clone());
         } else {
             kept.push(m);
@@ -435,15 +438,9 @@ pub async fn inbox_delete(
     let removed = original_len - kept.len();
 
     if removed > 0 {
-        let mut out = String::new();
-        for m in &kept {
-            let line = serde_json::to_string(m).map_err(|e| {
-                CommandError::new("internal", format!("serialising inbox row failed: {e}"))
-            })?;
-            out.push_str(&line);
-            out.push('\n');
-        }
-        atomic_write(&inbox_p, out.as_bytes()).map_err(CommandError::from)?;
+        // Seal the survivors. Writing them back as bare JSON would strip
+        // the encryption off every remaining message on an ordinary delete.
+        reseal_inbox(&inbox_p, key.as_ref(), &kept)?;
 
         // Drop deleted ids from the read-state file too. Case-
         // insensitive to catch entries written before normalisation.
