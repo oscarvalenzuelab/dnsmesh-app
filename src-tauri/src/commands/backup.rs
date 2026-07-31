@@ -62,6 +62,13 @@ pub struct ExportArgs {
     pub username: String,
     /// Output path; `.dmp-backup.tar.gz` is auto-appended if missing.
     pub output_path: PathBuf,
+    /// Passphrase the archive is encrypted under.
+    ///
+    /// Its own, not the identity's: a backup is restored on a machine that
+    /// does not have the identity yet, so the identity's key is not
+    /// available there — and an archive that outlives a passphrase change
+    /// should not stay readable under the old one.
+    pub passphrase: String,
 }
 
 /// Result of a successful export.
@@ -250,11 +257,17 @@ fn do_export(
 
     // <archive>.tmp → rename. A crash leaves a `.tmp` for the next
     // export to overwrite; users never see a half-written backup.
+    // Seal before it ever reaches disk, so no window exists where the
+    // plaintext archive — database, history, and TSIG secret in one file —
+    // is sitting there.
+    let sealed = crate::archive_crypt::encrypt(&args.passphrase, &buffer)?;
+    drop(buffer);
+
     let tmp_path = with_tmp_suffix(&archive_path);
-    std::fs::write(&tmp_path, &buffer).map_err(CommandError::from)?;
+    std::fs::write(&tmp_path, &sealed).map_err(CommandError::from)?;
     std::fs::rename(&tmp_path, &archive_path).map_err(CommandError::from)?;
 
-    let total_bytes = u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+    let total_bytes = u64::try_from(sealed.len()).unwrap_or(u64::MAX);
     Ok(ExportResult {
         archive_path,
         total_bytes,
@@ -328,6 +341,8 @@ fn append_file<W: std::io::Write>(
 /// Args for [`import_identity_backup`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportArgs {
+    /// Passphrase the archive was exported under.
+    pub passphrase: String,
     pub archive_path: PathBuf,
     /// Override `backup-meta.username` to avoid an index collision.
     #[serde(default)]
@@ -361,7 +376,11 @@ fn do_import(args: ImportArgs, state: &AppState) -> CommandResult<ImportResult> 
     }
     // Slurp into RAM so we can take two passes: read backup-meta.json
     // first, then extract with rewritten paths.
-    let raw_gz = std::fs::read(&args.archive_path).map_err(CommandError::from)?;
+    let on_disk = std::fs::read(&args.archive_path).map_err(CommandError::from)?;
+    // A plaintext archive from an older build gets its own error kind here
+    // rather than failing as though the passphrase were wrong.
+    let raw_gz = crate::archive_crypt::decrypt(&args.passphrase, &on_disk)?;
+    drop(on_disk);
     let meta = read_meta(&raw_gz)?;
     if meta.version != BACKUP_VERSION {
         return Err(CommandError::new(
@@ -572,6 +591,9 @@ fn ensure_safe_relative(rel: &str) -> Result<(), CommandError> {
 mod tests {
     use super::*;
 
+    /// Archive passphrase used throughout the export/import tests.
+    const ARCHIVE_PASS: &str = "archive-passphrase-for-tests";
+
     /// Fixed at-rest key for the export tests. Only the sealed-fallback
     /// path consults it; on desktop the credential store is used instead.
     const TEST_STORAGE_KEY: [u8; 32] = [0x2a; 32];
@@ -649,6 +671,7 @@ mod tests {
             ExportArgs {
                 username: "alice".into(),
                 output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &src_state,
             "bob",
@@ -675,6 +698,7 @@ mod tests {
             ExportArgs {
                 username: "alice".into(),
                 output_path: archive.clone(),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &src_state,
             "alice",
@@ -701,6 +725,7 @@ mod tests {
             ImportArgs {
                 archive_path: exported.archive_path.clone(),
                 override_username: Some("alice2".into()),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &dst_state,
         )
@@ -731,6 +756,74 @@ mod tests {
         assert_eq!(idx.identities[0].username, "alice2");
     }
 
+    /// The archive is the one file that carries everything needed to be
+    /// this identity. It must not be readable without its passphrase.
+    #[test]
+    fn exported_archive_is_opaque_without_the_passphrase() {
+        let (src_state, _src_root) = fresh_state();
+        let out_dir = TempDir::new().unwrap();
+        seed_identity(&src_state, "alice", "mesh.local", true, true);
+
+        let exported = do_export(
+            ExportArgs {
+                username: "alice".into(),
+                output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
+            },
+            &src_state,
+            "alice",
+            &TEST_STORAGE_KEY,
+        )
+        .unwrap();
+
+        let raw = std::fs::read(&exported.archive_path).unwrap();
+        // Not a gzip stream any more: the envelope wraps it.
+        assert!(
+            !raw.starts_with(&[0x1f, 0x8b]),
+            "archive still starts with gzip magic — it was not sealed",
+        );
+        // The seeded TSIG secret must not be sitting in the file.
+        assert!(
+            !raw.windows(6).any(|w| w == b"secret"),
+            "seeded secret readable in the exported archive",
+        );
+        // And the right passphrase still opens it.
+        assert!(crate::archive_crypt::decrypt(ARCHIVE_PASS, &raw).is_ok());
+    }
+
+    /// Restoring with the wrong passphrase must fail with its own kind, not
+    /// look like a corrupt or unsupported archive.
+    #[test]
+    fn import_rejects_a_wrong_archive_passphrase() {
+        let (src_state, _src_root) = fresh_state();
+        let out_dir = TempDir::new().unwrap();
+        seed_identity(&src_state, "alice", "mesh.local", true, true);
+
+        let exported = do_export(
+            ExportArgs {
+                username: "alice".into(),
+                output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
+            },
+            &src_state,
+            "alice",
+            &TEST_STORAGE_KEY,
+        )
+        .unwrap();
+
+        let (dst_state, _dst_root) = fresh_state();
+        let err = do_import(
+            ImportArgs {
+                archive_path: exported.archive_path,
+                override_username: None,
+                passphrase: "not the archive passphrase".to_string(),
+            },
+            &dst_state,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, "wrong_archive_passphrase", "got {err:?}");
+    }
+
     #[test]
     fn import_rejects_unsupported_meta_version() {
         let (src_state, _src_root) = fresh_state();
@@ -740,6 +833,7 @@ mod tests {
             ExportArgs {
                 username: "alice".into(),
                 output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &src_state,
             "alice",
@@ -749,7 +843,11 @@ mod tests {
 
         // Forge an unsupported version by rewriting the tar in memory
         // and swapping the meta entry's `version` field.
-        let raw_gz = std::fs::read(&exported.archive_path).unwrap();
+        // The archive on disk is encrypted, so unwrap it before forging
+        // and re-seal afterwards — otherwise this would exercise the
+        // envelope rather than the version check it is testing.
+        let sealed = std::fs::read(&exported.archive_path).unwrap();
+        let raw_gz = crate::archive_crypt::decrypt(ARCHIVE_PASS, &sealed).unwrap();
         let dec = GzDecoder::new(raw_gz.as_slice());
         let mut archive = Archive::new(dec);
 
@@ -772,13 +870,18 @@ mod tests {
             tar.into_inner().unwrap().finish().unwrap();
         }
         let forged = out_dir.path().join("forged.dmp-backup.tar.gz");
-        std::fs::write(&forged, &new_buf).unwrap();
+        std::fs::write(
+            &forged,
+            crate::archive_crypt::encrypt(ARCHIVE_PASS, &new_buf).unwrap(),
+        )
+        .unwrap();
 
         let (dst_state, _dst_root) = fresh_state();
         let err = do_import(
             ImportArgs {
                 archive_path: forged,
                 override_username: None,
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &dst_state,
         )
@@ -796,6 +899,7 @@ mod tests {
             ExportArgs {
                 username: "alice".into(),
                 output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &src_state,
             "alice",
@@ -812,6 +916,7 @@ mod tests {
             ImportArgs {
                 archive_path: exported.archive_path,
                 override_username: Some("alice2".into()),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &dst_state,
         )
@@ -840,6 +945,7 @@ mod tests {
             ExportArgs {
                 username: "alice".into(),
                 output_path: out_dir.path().join("alice"),
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &src_state,
             "alice",
@@ -854,6 +960,7 @@ mod tests {
             ImportArgs {
                 archive_path: exported.archive_path,
                 override_username: None,
+                passphrase: ARCHIVE_PASS.to_string(),
             },
             &dst_state,
         )

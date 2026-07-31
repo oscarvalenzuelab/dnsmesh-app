@@ -250,6 +250,10 @@
   let backupBusy = $state<boolean>(false);
   let backupError = $state<string>("");
   let backupSuccess = $state<string>("");
+  // The archive is encrypted under its own passphrase, separate from the
+  // identity's — see `archive_crypt` on the Rust side for why.
+  let backupPassphrase = $state<string>("");
+  let backupPassphraseConfirm = $state<string>("");
 
   function defaultBackupOutputPath(username: string): string {
     const stamp = Math.floor(Date.now() / 1000);
@@ -268,19 +272,31 @@
       backupError = "Output path is required.";
       return;
     }
+    if (!backupPassphrase) {
+      backupError = "An archive passphrase is required.";
+      return;
+    }
+    if (backupPassphrase !== backupPassphraseConfirm) {
+      backupError = "Archive passphrases don't match.";
+      return;
+    }
     backupBusy = true;
     try {
       const result = await api.exportIdentityBackup({
         username: $activeIdentity.username,
         output_path: outputPath,
+        passphrase: backupPassphrase,
       });
       backupSuccess =
         `Wrote ${result.archive_path} (${result.total_bytes} bytes, ` +
         `${result.file_count} file(s)). ` +
-        `WARNING: this archive contains every secret your identity ` +
-        `needs to send and receive. Anyone with the archive + your ` +
-        `passphrase can impersonate you. Store it in an encrypted vault.`;
+        `It is encrypted with the archive passphrase you just set. That ` +
+        `passphrase cannot be recovered — without it the backup is not ` +
+        `restorable. Anyone holding both the archive and that passphrase ` +
+        `can impersonate you.`;
       backupOutputPath = "";
+      backupPassphrase = "";
+      backupPassphraseConfirm = "";
     } catch (err) {
       backupError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -632,6 +648,26 @@
           omit it. Tildes (<code>~</code>) are NOT expanded; supply an
           absolute path.
         </small>
+      </label>
+      <label>
+        <span>Archive passphrase</span>
+        <input
+          type="password"
+          bind:value={backupPassphrase}
+          autocomplete="new-password"
+        />
+        <small class="muted">
+          Encrypts the archive. Separate from your identity passphrase, and
+          not recoverable — without it the backup cannot be restored.
+        </small>
+      </label>
+      <label>
+        <span>Confirm archive passphrase</span>
+        <input
+          type="password"
+          bind:value={backupPassphraseConfirm}
+          autocomplete="new-password"
+        />
       </label>
       <div class="actions">
         <button type="submit" class="primary" disabled={backupBusy}>
