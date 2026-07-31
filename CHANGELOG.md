@@ -15,6 +15,25 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10] - 2026-07-30 - Android build fix
+
+Ships the Android APK that alpha.9 was missing. No app-side change from
+alpha.9 otherwise.
+
+SDK pin moves to `sdk-v0.2.1`.
+
+### Fixed
+
+- The Android APK builds again. Vendored OpenSSL 3.6 emits SM4 AVX
+  instructions the NDK r26 assembler does not understand, which killed the
+  x86_64 Android leg of the alpha.9 release. Fixed in the SDK by holding
+  `openssl-src` at the 3.5 series.
+
+### Note
+
+alpha.9 is a desktop-only release: its Linux, macOS and Windows artifacts
+are fine, but it has no APK. Android users want this one.
+
 ## [0.1.0-alpha.9] - 2026-07-30 - encryption at rest
 
 Everything on disk that carries message content or key material is now
