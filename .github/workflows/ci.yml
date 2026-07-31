@@ -27,6 +27,22 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Versions agree across package.json, tauri.conf.json and Cargo.toml
+        # The release workflow refuses to build when these disagree, but it
+        # only finds out at tag time, after the bump has already been merged.
+        # Checking here means a half-done bump fails on the PR instead.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="$(jq -r .version package.json)"
+          conf="$(jq -r .version src-tauri/tauri.conf.json)"
+          cargo="$(grep -E '^version = ' src-tauri/Cargo.toml | head -n1 | sed -E 's/^version = "(.*)"/\1/')"
+          if [[ "$pkg" != "$conf" || "$pkg" != "$cargo" ]]; then
+            echo "::error::version mismatch: package.json=$pkg, tauri.conf.json=$conf, Cargo.toml=$cargo"
+            exit 1
+          fi
+          echo "OK: all three say $pkg"
+
       - name: Type-check (svelte-check)
         run: bun run check
 
