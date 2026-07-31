@@ -15,6 +15,26 @@ breaking wire-format changes there will be reflected here.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11] - 2026-07-31 - cross-zone sends stop lying
+
+SDK pin moves to `sdk-v0.3.0`.
+
+### Fixed
+
+- A message that cannot be announced in a provider zone no longer reports
+  plain success. Sending across zones failed this way every time: your
+  publish credentials cover your own zone, not the recipient's, so the
+  claim record that lets an un-pinned recipient discover the message was
+  silently dropped while the send looked fine. The composer now says the
+  message went out but could not be announced there, and that someone who
+  has not already added you will not see it.
+
+### Note
+
+Found by running the whole send path against the live public nodes, which
+had not been done on the encrypted build. Publish, prekeys, send and
+receive all work; this was the one thing quietly broken.
+
 ## [0.1.0-alpha.10] - 2026-07-30 - Android build fix
 
 Ships the Android APK that alpha.9 was missing. No app-side change from
