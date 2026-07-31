@@ -11,8 +11,9 @@
 //! identities/<username>/inbox-read.json     # if present
 //! ```
 //!
-//! The archive is NOT encrypted — it carries every secret needed to
-//! send and receive. The UI warns the user.
+//! The archive is encrypted under a passphrase the user sets at export
+//! time, separate from the identity's own. See `archive_crypt` for the
+//! envelope and for why it is keyed separately.
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};

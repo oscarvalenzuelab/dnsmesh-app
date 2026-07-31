@@ -613,12 +613,10 @@
       <a href="/identities">Identities</a> page.
     </p>
     <p class="warn small backup-warning">
-      <strong>The archive is NOT encrypted.</strong>
-      It contains every secret the identity needs to send and receive
-      messages. Anyone with the archive plus your passphrase can
-      impersonate you. Store it in an encrypted vault (e.g. an
-      encrypted disk image, a password-manager file attachment, or
-      <code>age</code>/<code>gpg</code> on top).
+      <strong>Keep the archive passphrase safe.</strong>
+      The archive is encrypted with it, and it cannot be recovered. Lose
+      it and the backup is not restorable. Anyone who has both the
+      archive and that passphrase can impersonate you.
     </p>
 
     {#if backupError}
