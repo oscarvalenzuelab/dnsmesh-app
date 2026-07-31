@@ -253,6 +253,55 @@ fn enforce_verifier(
     }
 }
 
+/// Settle which mesh zone this unlock is for.
+///
+/// A registered identity's zone wins and cannot be contradicted; a new one
+/// must be given a zone explicitly.
+fn resolve_domain(
+    username: &str,
+    existing: Option<&IdentityIndexEntry>,
+    supplied: Option<&str>,
+) -> CommandResult<String> {
+    match (existing, supplied) {
+        (Some(entry), Some(d)) if d.trim() != entry.domain => Err(CommandError::new(
+            "validation",
+            format!(
+                "identity {} is registered under domain {} but {} was supplied",
+                username, entry.domain, d
+            ),
+        )),
+        (Some(entry), _) => Ok(entry.domain.clone()),
+        (None, Some(d)) if !d.trim().is_empty() => Ok(d.trim().to_string()),
+        (None, _) => Err(CommandError::new(
+            "validation",
+            "domain is required to create a new identity",
+        )),
+    }
+}
+
+/// Fetch this identity's TSIG secret, if publishing is configured.
+///
+/// Reads the OS credential store (or the sealed fallback) and migrates any
+/// plaintext `tsig.key` an import or archive restore left behind. Needs the
+/// storage key, which is why it happens here rather than inside
+/// `build_writer`.
+fn resolve_tsig_secret(
+    state: &AppState,
+    username: &str,
+    publish: Option<&PublishConfig>,
+    storage_key: &[u8],
+) -> CommandResult<Option<Vec<u8>>> {
+    let Some(p) = publish else {
+        return Ok(None);
+    };
+    crate::tsig_secret::peek(
+        &state.identity_dir(username),
+        username,
+        storage_key,
+        Some(p.tsig_secret_path.as_path()),
+    )
+}
+
 /// Args for [`init_or_unlock`].
 ///
 /// `domain` is required the first time we see a username; on subsequent
@@ -298,25 +347,7 @@ pub async fn init_or_unlock(
 
     let mut index = state.load_index().map_err(CommandError::from)?;
     let existing = index.identities.iter().find(|e| e.username == username);
-    let domain = match (existing, args.domain.as_deref()) {
-        (Some(entry), Some(d)) if d.trim() != entry.domain => {
-            return Err(CommandError::new(
-                "validation",
-                format!(
-                    "identity {} is registered under domain {} but {} was supplied",
-                    username, entry.domain, d
-                ),
-            ));
-        }
-        (Some(entry), _) => entry.domain.clone(),
-        (None, Some(d)) if !d.trim().is_empty() => d.trim().to_string(),
-        (None, _) => {
-            return Err(CommandError::new(
-                "validation",
-                "domain is required to create a new identity",
-            ));
-        }
-    };
+    let domain = resolve_domain(&username, existing, args.domain.as_deref())?;
 
     // Materialise the per-identity directory before we open sqlite.
     let dir = state.identity_dir(&username);
@@ -349,6 +380,9 @@ pub async fn init_or_unlock(
     let precheck = DmpCrypto::from_passphrase(&args.passphrase, Some(&kdf_salt))
         .map_err(|e| CommandError::new("internal", format!("deriving identity: {e}")))?;
     let derived_spk_hex = hex::encode(precheck.signing_public_key_bytes());
+    // Same key the SDK uses for the database; needed below for the TSIG
+    // secret's sealed fallback on platforms without a credential store.
+    let precheck_storage_key = precheck.derive_storage_key();
     drop(precheck);
     // Any verifier to record is held back until the database has opened —
     // see `enforce_verifier` for why pinning before that is a lockout risk.
@@ -360,10 +394,17 @@ pub async fn init_or_unlock(
         args.confirm_pin_verifier,
     )?;
 
+    let tsig_secret = resolve_tsig_secret(
+        &state,
+        &username,
+        cfg.publish.as_ref(),
+        precheck_storage_key.as_ref(),
+    )?;
+
     let inner_reader = build_reader(cfg.resolvers.as_deref()).map_err(CommandError::from)?;
     let refreshable_reader = Arc::new(RefreshableReader::new(inner_reader));
     let (writer, publish_configured) =
-        build_writer(cfg.publish.as_ref()).map_err(CommandError::from)?;
+        build_writer(cfg.publish.as_ref(), tsig_secret).map_err(CommandError::from)?;
 
     let client_cfg = DmpClientConfig {
         username: username.clone(),
@@ -389,7 +430,19 @@ pub async fn init_or_unlock(
     );
 
     // The open succeeded, so the passphrase genuinely decrypts this
-    // database. Only now is it safe to record a first-time verifier.
+    // database. Only now is it safe to re-key the TSIG secret: doing it
+    // earlier could seal a plaintext secret under a key derived from a
+    // wrong-but-confirmed passphrase and delete the only readable copy.
+    if let Some(p) = cfg.publish.as_ref() {
+        crate::tsig_secret::adopt_plaintext(
+            &state.identity_dir(&username),
+            &username,
+            precheck_storage_key.as_ref(),
+            Some(p.tsig_secret_path.as_path()),
+        )?;
+    }
+
+    // Only now is it safe to record a first-time verifier.
     if let Some(spk) = pending_verifier_pin {
         cfg.verifier_spk_hex = Some(spk);
         state
@@ -629,6 +682,7 @@ const TSIG_SECRET_FILE: &str = "tsig.key";
 fn materialise_publish_block(
     state: &AppState,
     username: &str,
+    storage_key: &[u8],
     input: PublishConfigInput,
 ) -> Result<PublishConfig, CommandError> {
     let path_str = input.tsig_secret_path.trim();
@@ -653,10 +707,11 @@ fn materialise_publish_block(
             })?;
             let dir = state.identity_dir(username);
             std::fs::create_dir_all(&dir).map_err(CommandError::from)?;
-            let path = dir.join(TSIG_SECRET_FILE);
             let body = format!("base64:{b64}");
-            write_secret_file(&path, body.as_bytes())?;
-            path
+            // Straight into the credential store (or the sealed fallback);
+            // never staged as a plaintext file on the way.
+            crate::tsig_secret::store(&dir, username, body.as_bytes(), storage_key)?;
+            dir.join(TSIG_SECRET_FILE)
         }
         (true, None) => {
             return Err(CommandError::new(
@@ -675,20 +730,6 @@ fn materialise_publish_block(
     })
 }
 
-/// Write `bytes` to `path` and chmod it to 0600 on Unix. The TSIG
-/// secret authorises DNS UPDATE on behalf of the identity, so it's
-/// treated like an SSH private key.
-fn write_secret_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), CommandError> {
-    std::fs::write(path, bytes).map_err(CommandError::from)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perms).map_err(CommandError::from)?;
-    }
-    Ok(())
-}
-
 /// Persist publish/resolver settings for an identity. If the identity
 /// is the active one, the in-memory client is dropped so the next
 /// unlock picks up the new writer.
@@ -699,8 +740,33 @@ pub async fn update_publish_config(
 ) -> CommandResult<IdentityConfigView> {
     let username = sanitize_username(&args.username)?;
 
+    // Configuring publish requires the identity to be unlocked: the TSIG
+    // secret is stored under its at-rest key on platforms without a
+    // credential store, and there is no way to derive that while locked.
     let publish = match args.publish {
-        Some(p) => Some(materialise_publish_block(&state, &username, p)?),
+        Some(p) => {
+            let storage_key = {
+                let guard = state.active.read().await;
+                let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
+                if active.username != username {
+                    return Err(CommandError::new(
+                        "validation",
+                        format!(
+                            "can only configure publish for the unlocked identity; \
+                             `{}` is active but `{username}` was supplied",
+                            active.username
+                        ),
+                    ));
+                }
+                active.client.storage_key()
+            };
+            Some(materialise_publish_block(
+                &state,
+                &username,
+                storage_key.as_ref(),
+                p,
+            )?)
+        }
         None => None,
     };
     // Preserve the existing kdf_salt_base64 — clobbering it would lock
