@@ -213,11 +213,17 @@ export const api = {
   // sent log (per-identity, sealed at rest alongside the inbox)
   sentLoad: (ttlHours?: number): Promise<SentRowDto[]> =>
     invoke("sent_load", { args: { ttl_hours: ttlHours ?? null } }),
-  sentAppend: (row: SentRowDto): Promise<SentRowDto[]> =>
-    invoke("sent_append", { args: { row } }),
-  sentRemoveByRecipient: (recipientUsername: string): Promise<SentRowDto[]> =>
+  // `username` is checked against the unlocked identity on the Rust side,
+  // not inferred from it — a switch between send and persist would
+  // otherwise file the row under the wrong identity.
+  sentAppend: (username: string, row: SentRowDto): Promise<SentRowDto[]> =>
+    invoke("sent_append", { args: { username, row } }),
+  sentRemoveByRecipient: (
+    username: string,
+    recipientUsername: string,
+  ): Promise<SentRowDto[]> =>
     invoke("sent_remove_by_recipient", {
-      args: { recipient_username: recipientUsername },
+      args: { username, recipient_username: recipientUsername },
     }),
   inboxAppend: (
     messages: PersistedInboxMessage[],

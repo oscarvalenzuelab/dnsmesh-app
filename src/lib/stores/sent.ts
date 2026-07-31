@@ -68,7 +68,7 @@ async function migrateLegacyRows(identity: string): Promise<void> {
       // hydrate for this identity can finish the job.
       if (activeKey !== identity) return;
       if (row && typeof row.msg_id_hex === "string") {
-        await api.sentAppend(row);
+        await api.sentAppend(identity, row);
       }
     }
     // Re-check before dropping the source: the last append may have
@@ -126,7 +126,7 @@ export async function appendSent(
   row: SentRow,
 ): Promise<void> {
   try {
-    const rows = await api.sentAppend(row);
+    const rows = await api.sentAppend(identity, row);
     if (activeKey !== null && activeKey !== identity) return;
     activeKey = identity;
     sent.set(rows);
@@ -144,7 +144,7 @@ export async function removeSentByRecipient(
   recipient: string,
 ): Promise<void> {
   try {
-    const rows = await api.sentRemoveByRecipient(recipient);
+    const rows = await api.sentRemoveByRecipient(identity, recipient);
     if (activeKey !== null && activeKey !== identity) return;
     activeKey = identity;
     sent.set(rows);

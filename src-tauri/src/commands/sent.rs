@@ -55,6 +55,20 @@ async fn lock_for(username: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
+/// Reject a write aimed at an identity that is not the unlocked one.
+///
+/// Returning an error rather than silently no-opping: the caller keeps the
+/// row in memory and can retry, instead of believing it was persisted.
+fn ensure_matches_active(active: &str, requested: &str) -> CommandResult<()> {
+    if active == requested {
+        return Ok(());
+    }
+    Err(CommandError::new(
+        "validation",
+        format!("`{active}` is the unlocked identity, but the write targeted `{requested}`"),
+    ))
+}
+
 fn sent_path(state: &AppState, username: &str) -> PathBuf {
     state.identity_dir(username).join(SENT_FILE)
 }
@@ -159,6 +173,13 @@ pub async fn sent_load(
 /// Args for [`sent_append`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct SentAppendArgs {
+    /// Identity the row belongs to.
+    ///
+    /// Checked against the unlocked identity rather than inferred from it.
+    /// A send resolves asynchronously, so by the time this call runs the
+    /// user may have switched or locked — and writing to "whoever is active
+    /// now" would file one identity's message under another's log.
+    pub username: String,
     pub row: SentRow,
 }
 
@@ -171,6 +192,7 @@ pub async fn sent_append(
     let Some((username, key)) = active_identity(&state).await else {
         return Ok(Vec::new());
     };
+    ensure_matches_active(&username, &args.username)?;
     let lock = lock_for(&username).await;
     let _g = lock.lock();
     let path = sent_path(&state, &username);
@@ -185,6 +207,8 @@ pub async fn sent_append(
 /// Args for [`sent_remove_by_recipient`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct SentRemoveArgs {
+    /// Identity whose log is being edited; see [`SentAppendArgs::username`].
+    pub username: String,
     pub recipient_username: String,
 }
 
@@ -198,6 +222,7 @@ pub async fn sent_remove_by_recipient(
     let Some((username, key)) = active_identity(&state).await else {
         return Ok(Vec::new());
     };
+    ensure_matches_active(&username, &args.username)?;
     let lock = lock_for(&username).await;
     let _g = lock.lock();
     let path = sent_path(&state, &username);
@@ -266,6 +291,16 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A write aimed at a different identity must be refused outright, not
+    /// quietly applied to whoever happens to be unlocked.
+    #[test]
+    fn writes_for_another_identity_are_refused() {
+        assert!(ensure_matches_active("alice", "alice").is_ok());
+        let err = ensure_matches_active("alice", "bob").unwrap_err();
+        assert_eq!(err.kind, "validation");
+        assert!(err.message.contains("alice") && err.message.contains("bob"));
     }
 
     #[test]
