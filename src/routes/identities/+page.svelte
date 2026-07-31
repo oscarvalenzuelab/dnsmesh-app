@@ -1090,12 +1090,10 @@
         a vault and restore on another machine via "Import from backup".
       </p>
       <p class="warn small">
-        <strong>The archive is NOT encrypted.</strong>
-        It contains every secret the identity needs to send and receive
-        messages. Anyone with the archive plus your passphrase can
-        impersonate you. Store it in an encrypted vault
-        (encrypted disk image, password-manager attachment,
-        <code>age</code>/<code>gpg</code> on top, etc.).
+        <strong>Keep the archive passphrase safe.</strong>
+        The archive is encrypted with it, and it cannot be recovered.
+        Lose it and the backup is not restorable. Anyone who has both the
+        archive and that passphrase can impersonate you.
       </p>
       <label>
         <span>Output path</span>
