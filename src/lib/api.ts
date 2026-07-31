@@ -466,6 +466,12 @@ export interface ImportFromCliResult {
 export interface ExportBackupArgs {
   username: string;
   output_path: string;
+  /**
+   * Passphrase the archive is encrypted under — its own, not the
+   * identity's. A restore happens on a machine that does not have the
+   * identity yet, so the identity's key is unavailable there.
+   */
+  passphrase: string;
 }
 
 export interface ExportBackupResult {
@@ -478,6 +484,8 @@ export interface ExportBackupResult {
 // Args for `import_identity_backup`. `override_username` is required
 // when the archive's username would collide with an existing identity.
 export interface ImportBackupArgs {
+  /** Passphrase the archive was exported under. */
+  passphrase: string;
   archive_path: string;
   override_username?: string | null;
 }

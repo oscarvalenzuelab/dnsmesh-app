@@ -116,22 +116,43 @@ limits see the Python reference.
    downloads. There is no in-app updater that could be MITM'd, and
    correspondingly no automated way for users to learn about a
    security fix without checking the Releases page.
-4. **Identity backup archive is unencrypted.** The `.dmp-backup.tar.gz`
-   produced by **Settings → Export backup** contains every secret the
-   identity needs to send and receive. The UI surfaces a loud warning;
-   users are responsible for storing it in an encrypted vault
-   (encrypted disk image, password-manager attachment, `age` / `gpg`
-   wrapping).
-5. **TSIG secret stored on disk in cleartext.** The TSIG secret minted
-   by **Register with `<node>`** lives at
-   `<identity-dir>/tsig.key` with default OS permissions. On a shared
-   machine, set `chmod 0700 ~/.dmp` after creating the first identity.
-   There is no OS keychain integration yet.
-6. **Local IPC trust boundary.** The Tauri host trusts any process
+4. **Identity backup archive requires its own passphrase.** The
+   `.dmp-backup.tar.gz` produced by **Export backup** contains every
+   secret the identity needs to send and receive. It is encrypted under
+   a passphrase you set at export time, separate from the identity's
+   own. That passphrase is not recoverable: **without it the archive
+   cannot be restored.** Archives exported by builds before this shipped
+   are plaintext; restoring one reports
+   `legacy_plaintext_archive` rather than failing as a wrong passphrase.
+5. **TSIG secret placement differs by platform.** On macOS, Windows and
+   Linux the secret minted by **Register with `<node>`** goes into the
+   OS credential store (Keychain / Credential Manager / Secret Service)
+   and no longer sits in the identity directory. **On Android it is
+   encrypted at rest under the identity's key instead**, because the
+   credential-store library has no Android backend — using it there
+   would silently persist nothing. A plaintext `tsig.key` left by an
+   older build, a CLI import or an archive restore is adopted into the
+   proper store on the next successful unlock and then deleted.
+6. **What is encrypted at rest, and what is not.** With an identity
+   locked, everything in `<identity-dir>` that carries message content
+   or key material is unreadable without the passphrase: the database
+   (`dmp-rs.sqlite`, SQLCipher), the received history (`inbox.jsonl`),
+   the sent log (`sent.jsonl`) and the read-state file, each sealed
+   under a key derived from the identity's passphrase. `config.yaml`
+   stays readable by design — it holds the KDF salt, the passphrase
+   verifier (a public key) and publish settings, none of which are
+   secret. Filenames, directory names and file sizes are not hidden, so
+   **which** identities exist and roughly how much traffic they have
+   seen remains observable.
+
+   A database written before at-rest encryption cannot be opened by this
+   build and has no in-place upgrade: the identity has to be re-created.
+
+7. **Local IPC trust boundary.** The Tauri host trusts any process
    that can reach the IPC channel, which on a single-user desktop
    means any process running as the same OS user. Treat the
    passphrase prompt the same way you treat a sudo prompt.
-7. **DNS resolver auto-detect.** When no resolver override is set
+8. **DNS resolver auto-detect.** When no resolver override is set
    under **Settings → Resolver overrides**, the SDK falls back to a
    well-known public resolver list. On split-horizon networks this may
    not match what the rest of the system queries. Override explicitly

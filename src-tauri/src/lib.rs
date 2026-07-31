@@ -9,6 +9,7 @@
 //! `~/.dmp/identities/index.yaml` is the source of truth for which
 //! identities exist; the in-memory state only tracks the unlocked one.
 
+pub mod archive_crypt;
 pub mod atrest;
 pub mod commands;
 pub mod error;

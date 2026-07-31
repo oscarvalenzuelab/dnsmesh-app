@@ -49,6 +49,9 @@ rand = "0.8"
 # At-rest encryption for the per-identity JSONL files. Same primitive and
 # version the SDK already uses, so nothing new enters the dependency graph.
 chacha20poly1305 = "0.10"
+# Passphrase stretching for the backup archive, which is keyed independently
+# of any identity. Same version the SDK uses.
+argon2 = "0.5"
 zeroize = { version = "1", features = ["derive"] }
 
 

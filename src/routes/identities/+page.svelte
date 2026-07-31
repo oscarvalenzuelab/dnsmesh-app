@@ -147,6 +147,11 @@
   let exportBackupOutputPath = $state<string>("");
   let exportBackupBusy = $state<boolean>(false);
   let exportBackupError = $state<string>("");
+  // The archive carries the database, the message history and the TSIG
+  // secret, so it is encrypted under a passphrase of its own.
+  let exportBackupPassphrase = $state<string>("");
+  let exportBackupPassphraseConfirm = $state<string>("");
+  let importBackupPassphrase = $state<string>("");
 
   function defaultExportBackupPath(username: string): string {
     const stamp = Math.floor(Date.now() / 1000);
@@ -166,18 +171,30 @@
       exportBackupError = "Output path is required (use Reset to suggest one).";
       return;
     }
+    if (!exportBackupPassphrase) {
+      exportBackupError = "An archive passphrase is required.";
+      return;
+    }
+    if (exportBackupPassphrase !== exportBackupPassphraseConfirm) {
+      exportBackupError = "Archive passphrases don't match.";
+      return;
+    }
     exportBackupBusy = true;
     try {
       const result = await api.exportIdentityBackup({
         username: $activeIdentity.username,
         output_path: outputPath,
+        passphrase: exportBackupPassphrase,
       });
       info =
         `Exported backup of ${$activeIdentity.username}@${$activeIdentity.domain} ` +
         `(${result.file_count} files, ${result.total_bytes} bytes) to ${result.archive_path}. ` +
-        `Store it in an encrypted vault. The archive is NOT encrypted.`;
+        `The archive is encrypted with the passphrase you just set — it ` +
+        `cannot be restored without it, and there is no way to recover it.`;
       showExportBackup = false;
       exportBackupOutputPath = "";
+      exportBackupPassphrase = "";
+      exportBackupPassphraseConfirm = "";
     } catch (err) {
       exportBackupError = isCommandError(err) ? err.message : String(err);
     } finally {
@@ -225,6 +242,7 @@
       const result = await api.importIdentityBackup({
         archive_path: importBackupArchive.trim(),
         override_username: importBackupOverrideUsername.trim() || null,
+        passphrase: importBackupPassphrase,
       });
       info =
         `Restored ${result.username}@${result.domain} from backup ` +
@@ -233,9 +251,21 @@
       showImportBackup = false;
       importBackupArchive = "";
       importBackupOverrideUsername = "";
+      importBackupPassphrase = "";
       await reloadList();
     } catch (err) {
-      importBackupError = isCommandError(err) ? err.message : String(err);
+      if (isCommandError(err) && err.kind === "wrong_archive_passphrase") {
+        importBackupError =
+          "Wrong archive passphrase, or the file is damaged.";
+        importBackupPassphrase = "";
+      } else if (isCommandError(err) && err.kind === "legacy_plaintext_archive") {
+        importBackupError =
+          "This archive was exported by an older version and isn't " +
+          "encrypted. Restore it with that version, or re-export it from " +
+          "an install that can still open the identity.";
+      } else {
+        importBackupError = isCommandError(err) ? err.message : String(err);
+      }
     } finally {
       importBackupBusy = false;
     }
@@ -1060,12 +1090,10 @@
         a vault and restore on another machine via "Import from backup".
       </p>
       <p class="warn small">
-        <strong>The archive is NOT encrypted.</strong>
-        It contains every secret the identity needs to send and receive
-        messages. Anyone with the archive plus your passphrase can
-        impersonate you. Store it in an encrypted vault
-        (encrypted disk image, password-manager attachment,
-        <code>age</code>/<code>gpg</code> on top, etc.).
+        <strong>Keep the archive passphrase safe.</strong>
+        The archive is encrypted with it, and it cannot be recovered.
+        Lose it and the backup is not restorable. Anyone who has both the
+        archive and that passphrase can impersonate you.
       </p>
       <label>
         <span>Output path</span>
@@ -1080,6 +1108,26 @@
           omit it. Tildes (<code>~</code>) are NOT expanded; supply
           an absolute path on disk.
         </small>
+      </label>
+      <label>
+        <span>Archive passphrase</span>
+        <input
+          type="password"
+          bind:value={exportBackupPassphrase}
+          autocomplete="new-password"
+        />
+        <small class="muted">
+          Encrypts the archive. Separate from your identity passphrase, and
+          not recoverable — without it the backup cannot be restored.
+        </small>
+      </label>
+      <label>
+        <span>Confirm archive passphrase</span>
+        <input
+          type="password"
+          bind:value={exportBackupPassphraseConfirm}
+          autocomplete="new-password"
+        />
       </label>
       {#if exportBackupError}
         <p class="error small">{exportBackupError}</p>
@@ -1198,6 +1246,17 @@
           placeholder="leave blank to keep the archive's username"
           autocomplete="off"
         />
+      </label>
+      <label>
+        <span>Archive passphrase</span>
+        <input
+          type="password"
+          bind:value={importBackupPassphrase}
+          autocomplete="current-password"
+        />
+        <small class="muted">
+          The passphrase the archive was exported with — not the identity's.
+        </small>
       </label>
       {#if importBackupError}
         <p class="error small">{importBackupError}</p>
