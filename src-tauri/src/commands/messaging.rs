@@ -47,6 +47,13 @@ pub struct SendMessageArgs {
 #[derive(Debug, Clone, Serialize)]
 pub struct SendMessageResult {
     pub msg_id_hex: String,
+    /// Provider zones whose claim record could not be published.
+    ///
+    /// Empty on a fully successful send. Non-empty means the message was
+    /// delivered but a recipient who has not pinned the sender will not
+    /// discover it through those zones.
+    #[serde(default)]
+    pub undiscoverable_via: Vec<String>,
 }
 
 #[tauri::command]
@@ -74,7 +81,7 @@ pub async fn send_message(
     // receiver's replay cache dedupes; cheaper than branching.
     let provider_zones = build_send_provider_list(&active.claim_via, &active.domain);
     let providers: Vec<&str> = provider_zones.iter().map(String::as_str).collect();
-    let msg_id = active
+    let sent = active
         .client
         .send_message_with_claim(
             &args.recipient_username,
@@ -82,8 +89,25 @@ pub async fn send_message(
             &providers,
         )
         .await?;
+    // A claim that did not publish means an un-pinned recipient cannot
+    // discover the message. The send itself succeeded, so this is reported
+    // alongside the result rather than as an error, and the UI decides how
+    // loud to be. Saying nothing would look identical to full success.
+    let undiscoverable_via: Vec<String> = sent
+        .claim_failures
+        .iter()
+        .map(|f| f.provider_zone.clone())
+        .collect();
+    if !undiscoverable_via.is_empty() {
+        tracing::warn!(
+            zones = ?undiscoverable_via,
+            "claim records could not be published; an un-pinned recipient \
+             will not find this message",
+        );
+    }
     Ok(SendMessageResult {
-        msg_id_hex: hex::encode(msg_id),
+        msg_id_hex: hex::encode(sent.msg_id),
+        undiscoverable_via,
     })
 }
 

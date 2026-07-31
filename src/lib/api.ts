@@ -290,6 +290,13 @@ export interface DeleteContactResult {
 
 export interface SendMessageResult {
   msg_id_hex: string;
+  /**
+   * Provider zones whose claim record could not be published. Empty on a
+   * fully successful send. Non-empty means the message was delivered but a
+   * recipient who has not pinned you will not discover it, usually because
+   * your publish credentials do not cover that zone.
+   */
+  undiscoverable_via?: string[];
 }
 
 export interface InboxMessageView {
