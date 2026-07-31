@@ -957,6 +957,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "chacha20poly1305",
  "dnsmesh-client",
  "dnsmesh-core",
  "dnsmesh-net",
@@ -979,6 +980,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

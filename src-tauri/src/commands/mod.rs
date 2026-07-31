@@ -14,3 +14,4 @@ pub mod inbox;
 pub mod intro;
 pub mod messaging;
 pub mod nodes;
+pub mod sent;

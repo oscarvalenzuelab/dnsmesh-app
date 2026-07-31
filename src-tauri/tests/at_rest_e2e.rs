@@ -316,6 +316,63 @@ async fn confirming_a_wrong_passphrase_cannot_pin_a_lockout_verifier() {
     );
 }
 
+/// The persisted message history must be opaque on disk. This is the
+/// largest plaintext exposure the encryption work set out to close: the
+/// database holds only pending intros, `inbox.jsonl` holds everything
+/// received.
+#[tokio::test]
+async fn inbox_history_is_encrypted_on_disk() {
+    use dnsmesh_app_lib::commands::inbox::{InboxAppendArgs, PersistedInboxMessage, inbox_append};
+
+    const BODY: &str = "SENSITIVE-MESSAGE-BODY-CANARY";
+    let dir = tempfile::tempdir().unwrap();
+    let app = app_with_root(dir.path());
+
+    init_or_unlock(create_args("alice", PASS), app.state())
+        .await
+        .expect("identity creates");
+
+    let appended = inbox_append(
+        InboxAppendArgs {
+            messages: vec![PersistedInboxMessage {
+                sender_signing_pk_hex: "ab".repeat(32),
+                msg_id_hex: "cd".repeat(16),
+                timestamp: 1_700_000_000,
+                plaintext_utf8: BODY.to_string(),
+                plaintext_bytes: BODY.as_bytes().to_vec(),
+                sender_label: Some("bob@dmp.example.com".to_string()),
+            }],
+        },
+        app.state(),
+    )
+    .await
+    .expect("append succeeds");
+    assert_eq!(appended.appended, 1);
+
+    let inbox_file = app
+        .state::<AppState>()
+        .identity_dir("alice")
+        .join("inbox.jsonl");
+    let raw = std::fs::read(&inbox_file).expect("inbox file exists");
+
+    assert!(
+        !raw.windows(BODY.len()).any(|w| w == BODY.as_bytes()),
+        "message body found in plaintext in inbox.jsonl",
+    );
+    // The sender label is metadata but just as revealing, so check it too.
+    assert!(
+        !raw.windows(3).any(|w| w == b"bob"),
+        "sender label found in plaintext in inbox.jsonl",
+    );
+
+    // And it still round-trips through the app for the unlocked identity.
+    let rows = dnsmesh_app_lib::commands::inbox::inbox_load(app.state())
+        .await
+        .expect("inbox loads");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].plaintext_utf8, BODY);
+}
+
 /// Two identities under the same passphrase must still be distinct, since
 /// each gets its own random Argon2id salt.
 #[tokio::test]

@@ -106,16 +106,26 @@ pub async fn intro_accept(
     args: IntroAcceptArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<Option<DeliveredIntroView>> {
-    let (delivered, username) = {
+    let (delivered, username, storage_key) = {
         let guard = state.active.read().await;
         let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
         let Some(delivered) = active.client.accept_intro(args.intro_id).await? else {
             return Ok(None);
         };
-        (delivered, active.username.clone())
+        (
+            delivered,
+            active.username.clone(),
+            active.client.storage_key(),
+        )
     };
     let persisted = persisted_from(&delivered.message);
-    crate::commands::inbox::append_for_username(&state, &username, vec![persisted.clone()]).await?;
+    crate::commands::inbox::append_for_username(
+        &state,
+        &username,
+        storage_key.as_ref(),
+        vec![persisted.clone()],
+    )
+    .await?;
     Ok(Some(DeliveredIntroView {
         intro_id: delivered.intro_id,
         message: persisted,
@@ -149,7 +159,7 @@ pub async fn intro_trust(
     args: IntroTrustArgs,
     state: State<'_, AppState>,
 ) -> CommandResult<Option<DeliveredIntroView>> {
-    let (delivered, username) = {
+    let (delivered, username, storage_key) = {
         let guard = state.active.read().await;
         let active = guard.as_ref().ok_or_else(CommandError::not_initialized)?;
         let Some(delivered) = active
@@ -159,10 +169,20 @@ pub async fn intro_trust(
         else {
             return Ok(None);
         };
-        (delivered, active.username.clone())
+        (
+            delivered,
+            active.username.clone(),
+            active.client.storage_key(),
+        )
     };
     let persisted = persisted_from(&delivered.message);
-    crate::commands::inbox::append_for_username(&state, &username, vec![persisted.clone()]).await?;
+    crate::commands::inbox::append_for_username(
+        &state,
+        &username,
+        storage_key.as_ref(),
+        vec![persisted.clone()],
+    )
+    .await?;
     Ok(Some(DeliveredIntroView {
         intro_id: delivered.intro_id,
         message: persisted,

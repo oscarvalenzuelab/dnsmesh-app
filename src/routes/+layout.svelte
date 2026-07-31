@@ -117,7 +117,7 @@
   $effect(() => {
     const ident = $activeIdentity;
     if (!ident) return;
-    hydrateSent(ident.username);
+    void hydrateSent(ident.username);
     void hydrateInbox();
     void refreshContacts();
     void pollInbox().then(() =>
